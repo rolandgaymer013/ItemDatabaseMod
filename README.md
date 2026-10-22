@@ -104,7 +104,7 @@ A client-side Fabric mod designed specifically for the \*\*BlossomCraft SMP\*\*.
 
 
 
-1\. Download the latest `.jar` release from the \[Releases](https://github.com/rolandgaymer013/ItemDatabaseMod/releases) tab (or from Modrinth).
+1\. Download the latest `.jar` release from the \[Releases](https://github.com/rolandgaymer013/ItemDatabaseMod/releases) tab (or from CurseForge).
 
 2\. Place the downloaded `.jar` into your Minecraft `.minecraft/mods` directory.
 
