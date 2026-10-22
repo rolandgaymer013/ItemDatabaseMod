@@ -1,0 +1,31 @@
+{
+	"schemaVersion": 1,
+	"id": "itemdatabase",
+	"version": "${version}",
+	"name": "Item Database",
+	"description": "Displays custom item database details and sprites in-game.",
+	"authors": [
+		"Roland"
+	],
+	"contact": {},
+	"license": "MIT",
+	"icon": "assets/itemdatabase/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.roland.itemdatabase.ItemDatabase"
+		],
+		"client": [
+			"com.roland.itemdatabase.ItemDatabaseClient"
+		]
+	},
+	"mixins": [
+		"itemdatabase.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.1.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

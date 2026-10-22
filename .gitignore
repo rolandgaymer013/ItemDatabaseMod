@@ -1,0 +1,7 @@
+.gradle/
+build/
+run/
+itemdatabase_cache/
+*.log
+.idea/
+*.iml
