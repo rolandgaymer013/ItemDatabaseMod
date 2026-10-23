@@ -21,7 +21,8 @@ import java.util.List;
 public class ItemDatabaseScreen extends Screen {
     public enum ViewCategory {
         CRATES,
-        MISC
+        MISC,
+        TAGS
     }
 
     private ViewCategory currentCategory = ViewCategory.CRATES;
@@ -81,6 +82,10 @@ public class ItemDatabaseScreen extends Screen {
     private int drawerMaxScroll = 0;
     private final int drawerWidth = 200;
 
+    // Tag tab state
+    private com.roland.itemdatabase.data.TagCategory selectedTagCategory = com.roland.itemdatabase.data.TagCategory.TOOLS;
+    private String expandedTagName = null;
+
     // Click target tracking for drawer rows
     private record ClickableRow(int x, int y, int width, int height, Runnable action) {}
     private final List<ClickableRow> drawerClickables = new ArrayList<>();
@@ -108,19 +113,13 @@ public class ItemDatabaseScreen extends Screen {
         this.items.clear();
         if (currentCategory == ViewCategory.CRATES) {
             this.items.addAll(DatabaseManager.CRATE_ITEMS.values());
-            if (this.items.isEmpty() && !DatabaseManager.MISC_ITEMS.isEmpty()) {
-                this.currentCategory = ViewCategory.MISC;
-                this.items.addAll(DatabaseManager.MISC_ITEMS.values());
-            }
-        } else {
+        } else if (currentCategory == ViewCategory.MISC) {
             this.items.addAll(DatabaseManager.MISC_ITEMS.values());
-            if (this.items.isEmpty() && !DatabaseManager.CRATE_ITEMS.isEmpty()) {
-                this.currentCategory = ViewCategory.CRATES;
-                this.items.addAll(DatabaseManager.CRATE_ITEMS.values());
-            }
+        } else if (currentCategory == ViewCategory.TAGS) {
+            this.items.addAll(DatabaseManager.CRATE_ITEMS.values());
+            this.items.addAll(DatabaseManager.MISC_ITEMS.values());
         }
 
-        // Re-run mapping once items and crates are both present
         if (!DatabaseManager.CRATES.isEmpty() && !DatabaseManager.CRATE_ITEMS.isEmpty()) {
             DatabaseManager.mapItemsToCrates();
         }
@@ -346,6 +345,10 @@ public class ItemDatabaseScreen extends Screen {
 
         ItemEntry item = getCurrentItem();
 
+        // Calculate panel-relative mouse coordinates matching matrix translation and scaling
+        float localMouseX = (float) ((mouseX - centerX) / uiScale + panelWidth / 2.0F);
+        float localMouseY = (float) ((mouseY - centerY) / uiScale + panelHeight / 2.0F);
+
         // Push transformation matrix for centered scaling
         graphics.pose().pushMatrix();
         graphics.pose().translate(centerX, centerY);
@@ -353,7 +356,7 @@ public class ItemDatabaseScreen extends Screen {
         graphics.pose().translate(-panelWidth / 2.0F, -panelHeight / 2.0F);
 
         // Render the slide-out crate drawer when open
-        renderCrateDrawer(graphics);
+        renderCrateDrawer(graphics, localMouseX, localMouseY);
 
         int startX = 0;
         int startY = 0;
@@ -597,14 +600,10 @@ public class ItemDatabaseScreen extends Screen {
         return "";
     }
 
-    private void renderCrateDrawer(GuiGraphicsExtractor graphics) {
+    private void renderCrateDrawer(GuiGraphicsExtractor graphics, float localMouseX, float localMouseY) {
         if (!isDrawerOpen) return;
 
-        // Reset tooltip each frame (Step 2)
-
         drawerClickables.clear();
-
-        // Mouse coordinate calculation for hover checks (Step 3)
 
         int drawerX = -drawerWidth - 4;
         int drawerY = 0;
@@ -628,7 +627,32 @@ public class ItemDatabaseScreen extends Screen {
         String filterQuery = (this.searchBox != null) ? this.searchBox.getValue().trim().toLowerCase() : "";
         boolean isFiltering = !filterQuery.isEmpty();
 
-        int tabY = searchY + 18;
+        // --- Mode Selector: [ Crates | Misc | Tags ] ---
+        int modeY = searchY + 18;
+        int modeW = (drawerWidth - 8) / 3;
+        ViewCategory[] modes = ViewCategory.values();
+
+        for (int i = 0; i < modes.length; i++) {
+            ViewCategory mode = modes[i];
+            int mx = drawerX + 4 + (i * modeW);
+            boolean isSelected = (this.currentCategory == mode);
+
+            int bg = isSelected ? 0xFF692A82 : 0xFF220D30;
+            graphics.fill(mx, modeY, mx + modeW - 1, modeY + 13, bg);
+            graphics.outline(mx, modeY, modeW - 1, 13, isSelected ? 0xFFBA68C8 : 0xFF3D1650);
+
+            String color = isSelected ? "§f§l" : "§7";
+            String label = mode == ViewCategory.CRATES ? "Crates" : (mode == ViewCategory.MISC ? "Misc" : "Tags");
+            graphics.centeredText(this.font, Component.literal(color + label), mx + (modeW / 2), modeY + 3, 0xFFFFFFFF);
+
+            drawerClickables.add(new ClickableRow(mx, modeY, modeW, 13, () -> {
+                this.currentCategory = mode;
+                this.drawerScrollOffset = 0;
+                updateItemList();
+            }));
+        }
+
+        int tabY = modeY + 16;
         int viewTop = tabY + 20;
         int viewBottom = panelHeight - 6;
         int viewHeight = viewBottom - viewTop;
@@ -724,17 +748,33 @@ public class ItemDatabaseScreen extends Screen {
                 if (isExpanded) {
                     for (ItemEntry item : visibleItems) {
                         if (currentY + 10 >= viewTop && currentY <= viewBottom) {
-                            String cleanName = item.itemName().replaceAll("(?i)§[0-9a-fk-or]", "").trim();
-                            int availableTextWidth = drawerWidth - 22;
+                            boolean isCurrent = !this.items.isEmpty()
+                                    && this.currentIndex < this.items.size()
+                                    && this.items.get(this.currentIndex).id().equals(item.id());
 
-                            if (this.font.width("  §8• §7" + cleanName) > availableTextWidth) {
-                                while (cleanName.length() > 3 && this.font.width("  §8• §7" + cleanName + "..") > availableTextWidth) {
+                            boolean isHovered = localMouseX >= drawerX + 4 && localMouseX <= drawerX + drawerWidth - 4
+                                    && localMouseY >= currentY - 1 && localMouseY < currentY + 10;
+
+                            if (isCurrent) {
+                                graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x55BA68C8);
+                            } else if (isHovered) {
+                                graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
+                            }
+
+                            String cleanName = item.itemName().replaceAll("(?i)§[0-9a-fk-or]", "").trim();
+                            String rarityColor = getRarityColor(item.rarityHuman());
+
+                            String prefix = isCurrent ? "  §e▶ " : "  §8• ";
+                            String textFormat = isCurrent ? "§f§l" : rarityColor;
+
+                            int availableTextWidth = drawerWidth - 24;
+                            if (this.font.width(prefix + textFormat + cleanName) > availableTextWidth) {
+                                while (cleanName.length() > 3 && this.font.width(prefix + textFormat + cleanName + "..") > availableTextWidth) {
                                     cleanName = cleanName.substring(0, cleanName.length() - 1);
                                 }
                                 cleanName += "..";
                             }
-                            graphics.text(this.font, Component.literal("  §8• §7" + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
-
+                            graphics.text(this.font, Component.literal(prefix + textFormat + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
                         }
 
                         int itemYCapture = currentY;
@@ -756,7 +796,7 @@ public class ItemDatabaseScreen extends Screen {
 
             graphics.disableScissor();
 
-        } else {
+        } else if (currentCategory == ViewCategory.MISC) {
             // ========================================================
             // MISC TABS: [Unsorted | Voucher | Event | Furniture]
             // ========================================================
@@ -853,23 +893,158 @@ public class ItemDatabaseScreen extends Screen {
                 if (isExpanded) {
                     for (ItemEntry item : visibleItems) {
                         if (currentY + 10 >= viewTop && currentY <= viewBottom) {
-                            String cleanName = item.itemName().replaceAll("(?i)§[0-9a-fk-or]", "").trim();
-                            int availableTextWidth = drawerWidth - 22;
+                            boolean isCurrent = !this.items.isEmpty()
+                                    && this.currentIndex < this.items.size()
+                                    && this.items.get(this.currentIndex).id().equals(item.id());
 
-                            if (this.font.width("  §8• §7" + cleanName) > availableTextWidth) {
-                                while (cleanName.length() > 3 && this.font.width("  §8• §7" + cleanName + "..") > availableTextWidth) {
+                            boolean isHovered = localMouseX >= drawerX + 4 && localMouseX <= drawerX + drawerWidth - 4
+                                    && localMouseY >= currentY - 1 && localMouseY < currentY + 10;
+
+                            if (isCurrent) {
+                                graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x55BA68C8);
+                            } else if (isHovered) {
+                                graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
+                            }
+
+                            String cleanName = item.itemName().replaceAll("(?i)§[0-9a-fk-or]", "").trim();
+                            String rarityColor = getRarityColor(item.rarityHuman());
+
+                            String prefix = isCurrent ? "  §e▶ " : "  §8• ";
+                            String textFormat = isCurrent ? "§f§l" : rarityColor;
+
+                            int availableTextWidth = drawerWidth - 24;
+                            if (this.font.width(prefix + textFormat + cleanName) > availableTextWidth) {
+                                while (cleanName.length() > 3 && this.font.width(prefix + textFormat + cleanName + "..") > availableTextWidth) {
                                     cleanName = cleanName.substring(0, cleanName.length() - 1);
                                 }
                                 cleanName += "..";
                             }
-                            graphics.text(this.font, Component.literal("  §8• §7" + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
-
+                            graphics.text(this.font, Component.literal(prefix + textFormat + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
                         }
 
                         int itemYCapture = currentY;
                         drawerClickables.add(new ClickableRow(drawerX + 8, itemYCapture, drawerWidth - 12, 10, () -> {
                             this.currentCategory = ViewCategory.MISC;
                             updateItemList();
+                            for (int idx = 0; idx < items.size(); idx++) {
+                                if (items.get(idx).id().equals(item.id())) {
+                                    this.currentIndex = idx;
+                                    this.scrollOffset = 0;
+                                    break;
+                                }
+                            }
+                        }));
+                        currentY += 10;
+                    }
+                }
+            }
+
+            graphics.disableScissor();
+
+        } else if (currentCategory == ViewCategory.TAGS) {
+            // ========================================================
+            // TAG CATEGORY TABS: Carousel Category Header
+            // ========================================================
+            com.roland.itemdatabase.data.TagCategory[] tagCats = com.roland.itemdatabase.data.TagCategory.values();
+            int catBtnW = drawerWidth - 8;
+
+            graphics.fill(drawerX + 4, tabY, drawerX + 4 + catBtnW, tabY + 14, 0xFF692A82);
+            graphics.outline(drawerX + 4, tabY, catBtnW, 14, 0xFFBA68C8);
+            graphics.centeredText(this.font, Component.literal("§e◀ §f" + selectedTagCategory.label() + " §e▶"), drawerX + 4 + (catBtnW / 2), tabY + 3, 0xFFFFFFFF);
+
+            drawerClickables.add(new ClickableRow(drawerX + 4, tabY, catBtnW, 14, () -> {
+                int nextIdx = (selectedTagCategory.ordinal() + 1) % tagCats.length;
+                this.selectedTagCategory = tagCats[nextIdx];
+                this.expandedTagName = null;
+                this.drawerScrollOffset = 0;
+            }));
+
+            graphics.horizontalLine(drawerX + 4, drawerX + drawerWidth - 4, tabY + 16, 0xFF3D1650);
+
+            // Combine all items across Crate and Misc caches
+            List<ItemEntry> allItems = new ArrayList<>();
+            allItems.addAll(DatabaseManager.CRATE_ITEMS.values());
+            allItems.addAll(DatabaseManager.MISC_ITEMS.values());
+
+            // Calculate height for scrolling
+            for (String tag : selectedTagCategory.tags()) {
+                List<ItemEntry> matching = allItems.stream()
+                        .filter(it -> it.hasTag(tag))
+                        .filter(it -> !isFiltering || it.itemName().toLowerCase().contains(filterQuery) || it.id().contains(filterQuery))
+                        .toList();
+
+                if (isFiltering && matching.isEmpty()) continue;
+
+                boolean isExpanded = isFiltering || tag.equalsIgnoreCase(expandedTagName);
+                totalHeight += 12;
+                if (isExpanded) {
+                    totalHeight += (matching.size() * 10);
+                }
+            }
+            drawerMaxScroll = Math.max(0, totalHeight - viewHeight);
+
+            graphics.enableScissor(drawerX + 4, viewTop, drawerX + drawerWidth - 4, viewBottom);
+
+            for (String tag : selectedTagCategory.tags()) {
+                List<ItemEntry> matching = allItems.stream()
+                        .filter(it -> it.hasTag(tag))
+                        .filter(it -> !isFiltering || it.itemName().toLowerCase().contains(filterQuery) || it.id().contains(filterQuery))
+                        .toList();
+
+                if (isFiltering && matching.isEmpty()) continue;
+
+                boolean isExpanded = isFiltering || tag.equalsIgnoreCase(expandedTagName);
+                String arrow = isExpanded ? "§d▼ " : "§8▶ ";
+                String rowText = arrow + "§b" + tag + " §8(" + matching.size() + ")";
+
+                if (currentY + 10 >= viewTop && currentY <= viewBottom) {
+                    graphics.text(this.font, Component.literal(rowText), drawerX + 6, currentY, 0xFFFFFFFF);
+                }
+
+                int tagYCapture = currentY;
+                drawerClickables.add(new ClickableRow(drawerX + 4, tagYCapture, drawerWidth - 8, 12, () -> {
+                    if (!isFiltering) {
+                        expandedTagName = tag.equalsIgnoreCase(expandedTagName) ? null : tag;
+                    }
+                }));
+                currentY += 12;
+
+                if (isExpanded) {
+                    for (ItemEntry item : matching) {
+                        if (currentY + 10 >= viewTop && currentY <= viewBottom) {
+                            boolean isCurrent = !this.items.isEmpty()
+                                    && this.currentIndex < this.items.size()
+                                    && this.items.get(this.currentIndex).id().equals(item.id());
+
+                            boolean isHovered = localMouseX >= drawerX + 4 && localMouseX <= drawerX + drawerWidth - 4
+                                    && localMouseY >= currentY - 1 && localMouseY < currentY + 10;
+
+                            if (isCurrent) {
+                                graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x55BA68C8);
+                            } else if (isHovered) {
+                                graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
+                            }
+
+                            String cleanName = item.itemName().replaceAll("(?i)§[0-9a-fk-or]", "").trim();
+                            String rarityColor = getRarityColor(item.rarityHuman());
+
+                            String prefix = isCurrent ? "  §e▶ " : "  §8• ";
+                            String textFormat = isCurrent ? "§f§l" : rarityColor;
+
+                            int availableTextWidth = drawerWidth - 24;
+                            if (this.font.width(prefix + textFormat + cleanName) > availableTextWidth) {
+                                while (cleanName.length() > 3 && this.font.width(prefix + textFormat + cleanName + "..") > availableTextWidth) {
+                                    cleanName = cleanName.substring(0, cleanName.length() - 1);
+                                }
+                                cleanName += "..";
+                            }
+                            graphics.text(this.font, Component.literal(prefix + textFormat + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
+                        }
+
+                        int itemYCapture = currentY;
+                        drawerClickables.add(new ClickableRow(drawerX + 8, itemYCapture, drawerWidth - 12, 10, () -> {
+                            this.items.clear();
+                            this.items.addAll(allItems);
                             for (int idx = 0; idx < items.size(); idx++) {
                                 if (items.get(idx).id().equals(item.id())) {
                                     this.currentIndex = idx;
@@ -907,5 +1082,19 @@ public class ItemDatabaseScreen extends Screen {
             this.drawerScrollOffset = 0;
         });
         this.addWidget(this.searchBox);
+    }
+
+    private String getRarityColor(String rarity) {
+        if (rarity == null) return "§7";
+        return switch (rarity.trim().toUpperCase()) {
+            case "EXOTIC" -> "§c";       // Bright Red
+            case "LEGENDARY" -> "§6";    // Gold
+            case "MYTHIC" -> "§d";       // Light Purple / Pink
+            case "EPIC" -> "§5";         // Dark Purple
+            case "RARE" -> "§b";         // Aqua
+            case "UNCOMMON" -> "§a";     // Green
+            case "COMMON" -> "§f";       // White
+            default -> "§e";             // Yellow for custom/misc groups
+        };
     }
 }

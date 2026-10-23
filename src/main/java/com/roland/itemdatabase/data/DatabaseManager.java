@@ -15,6 +15,8 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.ArrayList;
 
 public class DatabaseManager {
     private static final String API_BASE = "https://items.blossomcraft.org";
@@ -52,7 +54,7 @@ public class DatabaseManager {
     }
 
     public static CompletableFuture<Boolean> fetchCrateItems() {
-        String requestedFields = "id;ItemName;ItemHuman;RarityHuman;WinPercentage;ImageType;Notes";
+        String requestedFields = "id;ItemName;ItemHuman;RarityHuman;WinPercentage;ImageType;Notes;Tags";
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(API_BASE + "/api/items"))
@@ -82,13 +84,13 @@ public class DatabaseManager {
     }
 
     public static CompletableFuture<Boolean> fetchMiscItems() {
-        String requestedFields = "id;GroupID;ItemName;Notes;ItemHuman;ImageType";
+        String requestedFields = "id;GroupID;ItemName;Notes;ItemHuman;ImageType;Tags";
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(API_BASE + "/api/miscitems"))
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .header("Accept", "application/json")
-                .header("I-INCLUDED-INFO", requestedFields)
+                .header("I-INCLUDED-INFO", "*")
                 .timeout(Duration.ofSeconds(15))
                 .GET()
                 .build();
@@ -164,6 +166,19 @@ public class DatabaseManager {
 
         String iconUrl = API_BASE + "/static/images/Icons/" + id + "." + imageType.toLowerCase();
 
+        // Extract the 7 database tag columns
+        java.util.List<String> tagsList = new java.util.ArrayList<>();
+        String[] tagKeys = {
+                "TagPrimary", "TagSecondary", "TagTertiary",
+                "TagQuaternary", "TagQuinary", "TagSenary", "TagSeptenary"
+        };
+        for (String key : tagKeys) {
+            String val = getStringSafe(obj, key, "").trim();
+            if (!val.isEmpty() && !val.equalsIgnoreCase("null") && !val.equalsIgnoreCase("none")) {
+                tagsList.add(val);
+            }
+        }
+
         ItemEntry entry = new ItemEntry(
                 id,
                 itemName,
@@ -171,11 +186,12 @@ public class DatabaseManager {
                 imageType.toLowerCase(),
                 winPercentage,
                 rarityHuman,
-                notes,      // notes
+                notes,
                 "",        // groupId
                 crateId,   // crateId
                 iconUrl,
-                true       // isCrateItem
+                true,      // isCrateItem
+                tagsList
         );
 
         CRATE_ITEMS.put(id, entry);
@@ -229,18 +245,39 @@ public class DatabaseManager {
         // Confirmed live folder: /static/images/Misc_Icons/
         String iconUrl = API_BASE + "/static/images/Misc_Icons/" + id + "." + imageType;
 
+        // Collect tags for misc items
+        java.util.List<String> tagsList = new java.util.ArrayList<>();
+
+        // 1. Check for the 7 tag columns if present in misc items
+        String[] tagKeys = {
+                "TagPrimary", "TagSecondary", "TagTertiary",
+                "TagQuaternary", "TagQuinary", "TagSenary", "TagSeptenary"
+        };
+        for (String key : tagKeys) {
+            String val = getStringSafe(obj, key, "").trim();
+            if (!val.isEmpty() && !val.equalsIgnoreCase("null") && !val.equalsIgnoreCase("none")) {
+                tagsList.add(val);
+            }
+        }
+
+        // 2. Also register the group label/type as a tag if non-empty
+        if (!group.isBlank() && !group.equalsIgnoreCase("null") && !group.equalsIgnoreCase("none")) {
+            tagsList.add(group.trim());
+        }
+
         MISC_ITEMS.put(id, new ItemEntry(
                 id,
                 itemName,
                 itemHuman,
                 imageType,
-                null,                                        // winPercentage
+                null,                                              // winPercentage
                 (!group.isBlank() ? group.toUpperCase() : "MISC"), // rarityHuman
-                notes,                                       // notes
-                group,                                       // groupId
-                "",                                          // crateId (empty for misc)
+                notes,                                             // notes
+                group,                                             // groupId
+                "",                                                // crateId (empty for misc)
                 iconUrl,
-                false                                        // isCrateItem
+                false,                                             // isCrateItem
+                tagsList                                           // tags
         ));
     }
 

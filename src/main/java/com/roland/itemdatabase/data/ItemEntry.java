@@ -1,5 +1,6 @@
 package com.roland.itemdatabase.data;
 
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -14,18 +15,13 @@ public record ItemEntry(
         String groupId,
         String crateId,
         String iconUrl,
-        boolean isCrateItem
+        boolean isCrateItem,
+        List<String> tags
 ) {
-    // Matches "Cooldown = 4 minutes", "Cooldown: 30s", "Cooldown - 1 hour", etc.
     private static final Pattern COOLDOWN_PATTERN = Pattern.compile(
             "(?i)cooldown\\s*[:=-]?\\s*([0-9]+\\s*(?:minutes?|mins?|seconds?|secs?|hours?|hrs?|m|s|h))"
     );
 
-    /**
-     * Extracts and returns the cooldown string from the notes field.
-     * Example: "4 minutes", "30s", "1 hour".
-     * Returns null if no cooldown is found or notes are empty.
-     */
     public String getCooldown() {
         if (this.notes == null || this.notes.isBlank()) {
             return null;
@@ -37,14 +33,22 @@ public record ItemEntry(
         return null;
     }
 
-    /**
-     * Helper to verify if this entry has a parsed cooldown.
-     */
     public boolean hasCooldown() {
         return getCooldown() != null;
     }
 
-    // Convenience constructor if you use default-sanitizing instantiation
+    /**
+     * Checks if this item matches a given tag name (case-insensitive).
+     */
+    public boolean hasTag(String queryTag) {
+        if (this.tags == null || this.tags.isEmpty() || queryTag == null) return false;
+        String normalized = queryTag.trim();
+        for (String tag : this.tags) {
+            if (tag.equalsIgnoreCase(normalized)) return true;
+        }
+        return false;
+    }
+
     public static ItemEntry of(
             String id,
             String itemName,
@@ -56,7 +60,8 @@ public record ItemEntry(
             String groupId,
             String crateId,
             String iconUrl,
-            boolean isCrateItem
+            boolean isCrateItem,
+            List<String> tags
     ) {
         return new ItemEntry(
                 id != null ? id : "",
@@ -69,7 +74,8 @@ public record ItemEntry(
                 groupId != null ? groupId : "",
                 crateId != null ? crateId : "",
                 iconUrl != null ? iconUrl : "",
-                isCrateItem
+                isCrateItem,
+                tags != null ? tags : List.of()
         );
     }
 }
