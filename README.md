@@ -2,11 +2,11 @@
 
 
 
-A client-side Fabric mod designed specifically for the \*\*BlossomCraft SMP\*\*. This mod connects directly to the server's database API to provide an in-game GUI for browsing, filtering, and previewing custom crates and miscellaneous items.
+A client-side Fabric mod designed specifically for the \*\*BlossomCraft SMP\*\*. This mod connects directly to the server's database API to provide an in-game GUI for browsing, filtering, and previewing custom crates, miscellaneous items, and tagged gear.
 
 
 
-> \*\*Note:\*\* This mod is intended exclusively for players on the BlossomCraft server network. Its database endpoints and item indexing are built specifically for BlossomCraft's custom item ecosystem.
+\*\*Note:\*\* This mod is intended exclusively for players on the BlossomCraft server network. Its database endpoints and item indexing are built specifically for BlossomCraft's custom item ecosystem.
 
 
 
@@ -18,17 +18,21 @@ A client-side Fabric mod designed specifically for the \*\*BlossomCraft SMP\*\*.
 
 
 
-\- \*\*Direct API Synchronization:\*\* Fetches live crate contents, miscellaneous items, and group structures directly from the database backend.
+\- \*\*Direct API Synchronization:\*\* Fetches live crate contents, miscellaneous items, tags, and group structures directly from the database backend.
 
 \- \*\*Dynamic Texture Rendering:\*\* Displays static PNGs and multi-frame animated GIFs centered and scaled for every custom item.
 
-\- \*\*Explorer Drawer:\*\* Expandable tree drawer organizing items into tabs:
+\- \*\*Explorer Drawer:\*\* Expandable tree drawer organizing items into three distinct modes:
 
 &#x20; - \*\*Crates:\*\* Seasonal, Side, and Misc crates.
 
 &#x20; - \*\*Misc Items:\*\* Unsorted, Voucher, Event, and Furniture groupings.
 
-\- \*\*Instant Search:\*\* Live `EditBox` filtering inside the drawer to quickly find items by name or database ID.
+&#x20; - \*\*Tags:\*\* Taxonomy explorer covering Tools, Weapons, Armor, Tool Features, and Misc Tags.
+
+\- \*\*Visual Feedback \& Styling:\*\* Items styled dynamically with custom rarity colors, hover row highlights, and active selection pointers.
+
+\- \*\*Instant Search:\*\* Live `EditBox` filtering inside the drawer to quickly find items by name, tag, or database ID.
 
 \- \*\*Offline Persistence:\*\* Automatically saves downloaded textures to a local disk cache (`itemdatabase\_cache/`) to minimize network bandwidth and prevent stutter.
 
@@ -46,7 +50,7 @@ A client-side Fabric mod designed specifically for the \*\*BlossomCraft SMP\*\*.
 
 \### Global Keybind
 
-\- \*\*`O`\*\* (Default): Open / Close the Item Database Screen.  
+\- \*\*O\*\* (Default): Open / Close the Item Database Screen.  
 
 &#x20; \*This is a registered Minecraft key mapping and can be rebound at any time via \*\*Options → Controls → Key Binds\*\*.\*
 
@@ -62,21 +66,21 @@ A client-side Fabric mod designed specifically for the \*\*BlossomCraft SMP\*\*.
 
 | :--- | :--- |
 
-| \*\*`C`\*\* | Toggle the Explorer Drawer (Crates \& Misc groups) |
+| \*\*C\*\* | Toggle the Explorer Drawer (Crates, Misc \& Tags) |
 
-| \*\*`Tab`\*\* | Switch Category between \*\*Crates\*\* and \*\*Misc Items\*\* |
+| \*\*Tab\*\* | Quick-toggle Category between \*\*Crates\*\* and \*\*Misc Items\*\* |
 
-| \*\*`A` / `D`\*\* \*(or Left/Right Arrows)\* | Navigate to Previous / Next item card |
+| \*\*A / D\*\* \*(or Left / Right Arrows)\* | Navigate to Previous / Next item card |
 
-| \*\*`Ctrl + Mouse Scroll`\*\* | Zoom / Scale the item card display |
+| \*\*Ctrl + Mouse Scroll\*\* | Zoom / Scale the item card display |
 
-| \*\*`Mouse Scroll`\*\* | Scroll through lore descriptions or drawer lists |
+| \*\*Mouse Scroll\*\* | Scroll through lore descriptions or drawer lists |
 
-| \*\*`Left-Click + Drag`\*\* | Reposition / Pan the item card |
+| \*\*Left-Click + Drag\*\* | Reposition / Pan the item card |
 
-| \*\*`R`\*\* | Reset scale and card position to default |
+| \*\*R\*\* | Reset scale and card position to default |
 
-| \*\*`Esc`\*\* | Unfocus search field / Exit screen |
+| \*\*Esc\*\* | Unfocus search field / Exit screen |
 
 
 
@@ -108,5 +112,5 @@ A client-side Fabric mod designed specifically for the \*\*BlossomCraft SMP\*\*.
 
 2\. Place the downloaded `.jar` into your Minecraft `.minecraft/mods` directory.
 
-3\. Launch Minecraft with your Fabric profile and press \*\*`O`\*\* in-game to open the database.
+3\. Launch Minecraft with your Fabric profile and press \*\*O\*\* in-game to open the database.
 
