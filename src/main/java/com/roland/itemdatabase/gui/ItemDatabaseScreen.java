@@ -413,16 +413,35 @@ public class ItemDatabaseScreen extends Screen {
                 String groupLabel = item.groupId().isEmpty() ? "None" : item.groupId();
                 graphics.text(this.font, Component.literal("§dGroup: §f" + groupLabel), artBoxX, metaY, 0xFFFFFFFF);
             }
-            graphics.text(this.font, Component.literal("§8Type: " + item.imageType()), artBoxX, metaY + 10, 0xFFFFFFFF);
-            graphics.text(this.font, Component.literal("§8ID: " + item.id()), artBoxX, metaY + 20, 0xFFFFFFFF);
+            metaY += 10;
+
+            graphics.text(this.font, Component.literal("§8Type: " + item.imageType()), artBoxX, metaY, 0xFFFFFFFF);
+            metaY += 10;
+
+            graphics.text(this.font, Component.literal("§8ID: " + item.id()), artBoxX, metaY, 0xFFFFFFFF);
+            metaY += 10;
 
             // Display base Minecraft item on left panel if present
             String baseItem = extractBaseMinecraftItem(item.itemHuman());
             if (!baseItem.isEmpty()) {
-                graphics.text(this.font, Component.literal("§8Item: §7" + baseItem), artBoxX, metaY + 30, 0xFFFFFFFF);
-                graphics.text(this.font, Component.literal("§7" + (currentIndex + 1) + " / " + items.size()), artBoxX, metaY + 40, 0xFF888888);
-            } else {
-                graphics.text(this.font, Component.literal("§7" + (currentIndex + 1) + " / " + items.size()), artBoxX, metaY + 30, 0xFF888888);
+                graphics.text(this.font, Component.literal("§8Item: §7" + baseItem), artBoxX, metaY, 0xFFFFFFFF);
+                metaY += 10;
+            }
+
+            // Item counter (e.g., 910 / 1497)
+            graphics.text(this.font, Component.literal("§7" + (currentIndex + 1) + " / " + items.size()), artBoxX, metaY, 0xFF888888);
+            metaY += 12;
+
+            // --- Cooldown Pill Badge (Positioned below the counter) ---
+            if (item.hasCooldown()) {
+                String cdText = "⏱ " + item.getCooldown();
+                int cdWidth = this.font.width(cdText);
+                int badgeX = artBoxX + 1;
+                int badgeY = metaY + 1;
+
+                graphics.fill(badgeX - 2, badgeY - 2, badgeX + cdWidth + 4, badgeY + 10, 0xD012061A);
+                graphics.outline(badgeX - 2, badgeY - 2, cdWidth + 6, 12, 0xFFAB47BC);
+                graphics.text(this.font, Component.literal("§a" + cdText), badgeX + 1, badgeY, 0xFFFFFFFF);
             }
         } else {
             graphics.centeredText(this.font, Component.literal("§eLoading Database..."), artBoxX + (artBoxSize / 2), artBoxY + 50, 0xFFFFFFFF);

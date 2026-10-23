@@ -52,7 +52,7 @@ public class DatabaseManager {
     }
 
     public static CompletableFuture<Boolean> fetchCrateItems() {
-        String requestedFields = "id;ItemName;ItemHuman;RarityHuman;WinPercentage;ImageType";
+        String requestedFields = "id;ItemName;ItemHuman;RarityHuman;WinPercentage;ImageType;Notes";
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(API_BASE + "/api/items"))
@@ -160,6 +160,7 @@ public class DatabaseManager {
         String winPercentage = getStringSafe(obj, "WinPercentage", "0");
         String imageType = getStringSafe(obj, "ImageType", "png");
         String crateId = getStringSafe(obj, "CrateID", "");
+        String notes = getStringSafe(obj, "Notes", "");
 
         String iconUrl = API_BASE + "/static/images/Icons/" + id + "." + imageType.toLowerCase();
 
@@ -170,7 +171,7 @@ public class DatabaseManager {
                 imageType.toLowerCase(),
                 winPercentage,
                 rarityHuman,
-                "",        // notes
+                notes,      // notes
                 "",        // groupId
                 crateId,   // crateId
                 iconUrl,
