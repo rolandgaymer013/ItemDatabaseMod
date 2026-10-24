@@ -158,6 +158,7 @@ public class DatabaseManager {
 
         String itemName = getStringSafe(obj, "ItemName", "Item " + id);
         String itemHuman = getStringSafe(obj, "ItemHuman", "");
+        String rawData = getStringSafe(obj, "RawData", "");
         String rarityHuman = getStringSafe(obj, "RarityHuman", "Common");
         String winPercentage = getStringSafe(obj, "WinPercentage", "0");
         String imageType = getStringSafe(obj, "ImageType", "png");
@@ -183,6 +184,7 @@ public class DatabaseManager {
                 id,
                 itemName,
                 itemHuman,
+                rawData,
                 imageType.toLowerCase(),
                 winPercentage,
                 rarityHuman,
@@ -238,6 +240,7 @@ public class DatabaseManager {
 
         String itemName = getStringSafe(obj, "ItemName", "Item " + id);
         String itemHuman = getStringSafe(obj, "ItemHuman", "");
+        String rawData = getStringSafe(obj, "RawData", "");
         String imageType = getStringSafe(obj, "ImageType", "png").toLowerCase();
         String group = getStringSafe(obj, "GroupID", "");
         String notes = getStringSafe(obj, "Notes", "");
@@ -269,6 +272,7 @@ public class DatabaseManager {
                 id,
                 itemName,
                 itemHuman,
+                rawData,
                 imageType,
                 null,                                              // winPercentage
                 (!group.isBlank() ? group.toUpperCase() : "MISC"), // rarityHuman
