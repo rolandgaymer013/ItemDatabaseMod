@@ -65,3 +65,11 @@ A client-side Fabric mod designed specifically for the **BlossomCraft SMP**. Thi
 1. Download the latest `.jar` release from the [Releases](https://github.com/rolandgaymer013/ItemDatabaseMod/releases) tab (or from CurseForge).
 2. Place the downloaded `.jar` into your Minecraft `.minecraft/mods` directory.
 3. Launch Minecraft with your Fabric profile and press **O** in-game to open the database.
+
+---
+
+## 📚 Documentation
+For complete guides, troubleshooting, and feature breakdowns, visit the **[Item Database Wiki](https://github.com/rolandgaymer013/ItemDatabaseMod/wiki)**:
+* [Installation Guide](https://github.com/rolandgaymer013/ItemDatabaseMod/wiki/Installation-&-Requirements)
+* [Controls & Shortcuts](https://github.com/rolandgaymer013/ItemDatabaseMod/wiki/Controls-&-Navigation)
+* [Troubleshooting & Cache](https://github.com/rolandgaymer013/ItemDatabaseMod/wiki/Troubleshooting-&-Cache)
