@@ -2,24 +2,42 @@ package com.roland.itemdatabase.gui;
 
 import com.roland.itemdatabase.config.ModConfig;
 import com.roland.itemdatabase.data.AnimatedTexture;
+import com.roland.itemdatabase.data.CollectionManager;
+import com.roland.itemdatabase.data.CrateEntry;
 import com.roland.itemdatabase.data.DatabaseManager;
 import com.roland.itemdatabase.data.ItemEntry;
+import com.roland.itemdatabase.data.MiscGroupEntry;
+import com.roland.itemdatabase.data.RawDataParser;
+import com.roland.itemdatabase.data.TagCategory;
 import com.roland.itemdatabase.data.TextureDownloader;
-import com.roland.itemdatabase.data.CollectionManager;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.network.chat.Style;
 import net.minecraft.resources.Identifier;
+import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.util.Mth;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+/**
+ * Main GUI viewer for the BlossomCraft Item Database.
+ * Features an interactive draggable card, smooth scale zooming, live search drawer,
+ * per-character hex gradient rendering, animated GIF textures, and collection tracking.
+ */
 public class ItemDatabaseScreen extends Screen {
+
     public enum ViewCategory {
         CRATES,
         MISC,
@@ -27,6 +45,44 @@ public class ItemDatabaseScreen extends Screen {
         COLLECTION
     }
 
+    public enum CrateTab {
+        SEASONAL("Seasonal"),
+        SIDE("Side"),
+        MISC("Misc");
+
+        private final String label;
+        CrateTab(String label) { this.label = label; }
+        public String label() { return label; }
+    }
+
+    public enum MiscTab {
+        UNSORTED("Unsorted"),
+        VOUCHER("Voucher"),
+        EVENT("Event"),
+        FURNITURE("Furniture");
+
+        private final String label;
+        MiscTab(String label) { this.label = label; }
+        public String label() { return label; }
+    }
+
+    public enum CollectionFilter {
+        ALL("All"),
+        OWNED("Owned"),
+        MISSING("Missing");
+
+        private final String label;
+        CollectionFilter(String label) { this.label = label; }
+        public String label() { return label; }
+    }
+
+    // --- Static Regex Cache for Lore Parsing ---
+    private static final Pattern NBT_ID_PATTERN = Pattern.compile("\"id\"\\s*:\\s*\"(?:minecraft:)?([a-z0-9_]+)\"");
+    private static final Pattern NBT_ALT_ID_PATTERN = Pattern.compile("id:\\s*\"?(?:minecraft:)?([a-z0-9_]+)\"?");
+    private static final Pattern CLEAN_REGEX_PATTERN = Pattern.compile("(?i)§[0-9a-fk-or]");
+    private static final Pattern TOKEN_SPLIT_PATTERN = Pattern.compile("[\n\r]+|\\s*[\u2550\u2500\u25C6\u25C7\u2726\u2727\u2022\u25A0\u2748\u273F\u22EE\u25BA\u25C4]+\\s*");
+
+    // Primary navigation & item state
     private ViewCategory currentCategory = ViewCategory.CRATES;
     private final List<ItemEntry> items = new ArrayList<>();
     private int currentIndex = 0;
@@ -52,56 +108,21 @@ public class ItemDatabaseScreen extends Screen {
 
     private EditBox searchBox;
 
-    private String lastLoggedId = "";
-
-    public enum CrateTab {
-        SEASONAL("Seasonal"),
-        SIDE("Side"),
-        MISC("Misc");
-
-        private final String label;
-        CrateTab(String label) { this.label = label; }
-        public String label() { return label; }
-    }
-
-    public enum MiscTab {
-        UNSORTED("Unsorted"),
-        VOUCHER("Voucher"),
-        EVENT("Event"),
-        FURNITURE("Furniture");
-
-        private final String label;
-        MiscTab(String label) { this.label = label; }
-        public String label() { return label; }
-    }
-
-    private MiscTab selectedMiscTab = MiscTab.UNSORTED;
-    private int expandedMiscGroupId = -1;
-
-    public enum CollectionFilter {
-        ALL("All"),
-        OWNED("Owned"),
-        MISSING("Missing");
-
-        private final String label;
-        CollectionFilter(String label) { this.label = label; }
-        public String label() { return label; }
-    }
-
-    private CollectionFilter collectionFilter = CollectionFilter.ALL;
-
     // Drawer state
     private boolean isDrawerOpen = false;
-    private CrateTab selectedTab = CrateTab.SEASONAL;
-    private int expandedCrateId = -1;
-    private int expandedCollectionCrateId = -1;
+    private final int drawerWidth = 200;
     private int drawerScrollOffset = 0;
     private int drawerMaxScroll = 0;
-    private final int drawerWidth = 200;
 
-    // Tag tab state
-    private com.roland.itemdatabase.data.TagCategory selectedTagCategory = com.roland.itemdatabase.data.TagCategory.TOOLS;
+    // Sub-tab category selections
+    private CrateTab selectedTab = CrateTab.SEASONAL;
+    private int expandedCrateId = -1;
+    private MiscTab selectedMiscTab = MiscTab.UNSORTED;
+    private int expandedMiscGroupId = -1;
+    private TagCategory selectedTagCategory = TagCategory.TOOLS;
     private String expandedTagName = null;
+    private CollectionFilter collectionFilter = CollectionFilter.ALL;
+    private int expandedCollectionCrateId = -1;
 
     // Click target tracking for drawer rows
     private record ClickableRow(int x, int y, int width, int height, Runnable action) {}
@@ -126,28 +147,33 @@ public class ItemDatabaseScreen extends Screen {
         }
     }
 
+    /**
+     * Synchronizes and filters the internal item list based on the active view category.
+     */
     private void updateItemList() {
         this.items.clear();
-        if (currentCategory == ViewCategory.CRATES) {
-            this.items.addAll(DatabaseManager.CRATE_ITEMS.values());
-        } else if (currentCategory == ViewCategory.MISC) {
-            this.items.addAll(DatabaseManager.MISC_ITEMS.values());
-        } else if (currentCategory == ViewCategory.TAGS) {
-            this.items.addAll(DatabaseManager.CRATE_ITEMS.values());
-            this.items.addAll(DatabaseManager.MISC_ITEMS.values());
-        } else if (currentCategory == ViewCategory.COLLECTION) {
-            List<ItemEntry> combined = new ArrayList<>();
-            combined.addAll(DatabaseManager.CRATE_ITEMS.values());
-            combined.addAll(DatabaseManager.MISC_ITEMS.values());
 
-            for (ItemEntry it : combined) {
-                boolean owned = CollectionManager.isOwned(it.id());
-                if (collectionFilter == CollectionFilter.ALL) {
-                    this.items.add(it);
-                } else if (collectionFilter == CollectionFilter.OWNED && owned) {
-                    this.items.add(it);
-                } else if (collectionFilter == CollectionFilter.MISSING && !owned) {
-                    this.items.add(it);
+        switch (currentCategory) {
+            case CRATES -> this.items.addAll(DatabaseManager.CRATE_ITEMS.values());
+            case MISC -> this.items.addAll(DatabaseManager.MISC_ITEMS.values());
+            case TAGS -> {
+                this.items.addAll(DatabaseManager.CRATE_ITEMS.values());
+                this.items.addAll(DatabaseManager.MISC_ITEMS.values());
+            }
+            case COLLECTION -> {
+                List<ItemEntry> combined = new ArrayList<>();
+                combined.addAll(DatabaseManager.CRATE_ITEMS.values());
+                combined.addAll(DatabaseManager.MISC_ITEMS.values());
+
+                for (ItemEntry it : combined) {
+                    boolean owned = CollectionManager.isOwned(it.id());
+                    if (collectionFilter == CollectionFilter.ALL) {
+                        this.items.add(it);
+                    } else if (collectionFilter == CollectionFilter.OWNED && owned) {
+                        this.items.add(it);
+                    } else if (collectionFilter == CollectionFilter.MISSING && !owned) {
+                        this.items.add(it);
+                    }
                 }
             }
         }
@@ -177,6 +203,16 @@ public class ItemDatabaseScreen extends Screen {
     }
 
     @Override
+    protected void init() {
+        super.init();
+        this.searchBox = new EditBox(this.font, 0, 0, drawerWidth - 12, 14, Component.literal("Search..."));
+        this.searchBox.setHint(Component.literal("§8Search items..."));
+        this.searchBox.setMaxLength(32);
+        this.searchBox.setResponder(s -> this.drawerScrollOffset = 0);
+        this.addWidget(this.searchBox);
+    }
+
+    @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
         long windowHandle = this.minecraft.getWindow().handle();
         boolean isCtrlDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS
@@ -194,13 +230,13 @@ public class ItemDatabaseScreen extends Screen {
             return true;
         }
 
-        // Calculate transformed cursor position relative to the card's top-left
+        // Calculate transformed cursor position relative to the card's center
         float centerX = (this.width / 2.0F) + cardOffsetX;
         float centerY = (this.height / 2.0F) + cardOffsetY;
         float localMouseX = (float) ((mouseX - centerX) / uiScale + panelWidth / 2.0F);
         float localMouseY = (float) ((mouseY - centerY) / uiScale + panelHeight / 2.0F);
 
-        // 2. Left Drawer scroll (when open and hovered over the left drawer)
+        // 2. Left Drawer scroll
         if (isDrawerOpen && localMouseX < 0 && localMouseX >= -drawerWidth - 6 && localMouseY >= 0 && localMouseY <= panelHeight) {
             if (drawerMaxScroll > 0) {
                 drawerScrollOffset = Mth.clamp(drawerScrollOffset - (int) (verticalAmount * 14), 0, drawerMaxScroll);
@@ -208,7 +244,7 @@ public class ItemDatabaseScreen extends Screen {
             }
         }
 
-        // 3. Right Card lore scroll (when hovered over the card)
+        // 3. Right Card lore scroll
         if (localMouseX >= 0 && localMouseX <= panelWidth && localMouseY >= 0 && localMouseY <= panelHeight) {
             if (maxScroll > 0) {
                 scrollOffset = Mth.clamp(scrollOffset - (int) (verticalAmount * 14), 0, maxScroll);
@@ -220,15 +256,12 @@ public class ItemDatabaseScreen extends Screen {
     }
 
     @Override
-    public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean bl) {
+    public boolean mouseClicked(MouseButtonEvent event, boolean bl) {
         if (isDrawerOpen) {
-            double mouseX = event.x();
-            double mouseY = event.y();
-
             float centerX = (this.width / 2.0F) + cardOffsetX;
             float centerY = (this.height / 2.0F) + cardOffsetY;
-            float localMouseX = (float) ((mouseX - centerX) / uiScale + panelWidth / 2.0F);
-            float localMouseY = (float) ((mouseY - centerY) / uiScale + panelHeight / 2.0F);
+            float localMouseX = (float) ((event.x() - centerX) / uiScale + panelWidth / 2.0F);
+            float localMouseY = (float) ((event.y() - centerY) / uiScale + panelHeight / 2.0F);
 
             // Check search box focus
             if (event.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT && this.searchBox != null) {
@@ -247,7 +280,7 @@ public class ItemDatabaseScreen extends Screen {
                 }
             }
 
-            // Check drawer rows
+            // Check clickable drawer rows
             for (ClickableRow row : drawerClickables) {
                 if (localMouseX >= row.x() && localMouseX <= row.x() + row.width()
                         && localMouseY >= row.y() && localMouseY <= row.y() + row.height()) {
@@ -266,11 +299,7 @@ public class ItemDatabaseScreen extends Screen {
                 this.searchBox.setFocused(false);
                 return true;
             }
-
-            // Give the EditBox a chance to process navigation/editing keys (Backspace, Delete, Arrow keys, etc.)
             this.searchBox.keyPressed(event);
-
-            // Always consume the key event while typing so hotkeys (A, D, R, Tab, C) never trigger
             return true;
         }
 
@@ -334,7 +363,7 @@ public class ItemDatabaseScreen extends Screen {
     }
 
     @Override
-    public boolean charTyped(net.minecraft.client.input.CharacterEvent event) {
+    public boolean charTyped(CharacterEvent event) {
         if (this.searchBox != null && this.searchBox.isFocused()) {
             return this.searchBox.charTyped(event);
         }
@@ -349,11 +378,9 @@ public class ItemDatabaseScreen extends Screen {
         long windowHandle = this.minecraft.getWindow().handle();
         boolean isMouseDown = GLFW.glfwGetMouseButton(windowHandle, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
 
-        // Card center in window space
         float centerX = (this.width / 2.0F) + cardOffsetX;
         float centerY = (this.height / 2.0F) + cardOffsetY;
 
-        // Hit-test bounding box scaled around center
         float halfW = (panelWidth * uiScale) / 2.0F;
         float halfH = (panelHeight * uiScale) / 2.0F;
         float cardLeft = centerX - halfW;
@@ -389,23 +416,22 @@ public class ItemDatabaseScreen extends Screen {
 
         ItemEntry item = getCurrentItem();
 
-        // Calculate panel-relative mouse coordinates matching matrix translation and scaling
         float localMouseX = (float) ((mouseX - centerX) / uiScale + panelWidth / 2.0F);
         float localMouseY = (float) ((mouseY - centerY) / uiScale + panelHeight / 2.0F);
 
-        // Push transformation matrix for centered scaling
+        // Push transformation matrix for centered scaling and positioning
         graphics.pose().pushMatrix();
         graphics.pose().translate(centerX, centerY);
         graphics.pose().scale(uiScale, uiScale);
         graphics.pose().translate(-panelWidth / 2.0F, -panelHeight / 2.0F);
 
-        // Render the slide-out crate drawer when open
+        // Render drawer when opened
         renderCrateDrawer(graphics, localMouseX, localMouseY);
 
         int startX = 0;
         int startY = 0;
 
-        // Base card fill & outer border
+        // Base card background & outer border
         graphics.fill(startX, startY, startX + panelWidth, startY + panelHeight, 0xFF180A22);
         graphics.outline(startX, startY, panelWidth, panelHeight, isDragging ? 0xFFBA68C8 : 0xFF692A82);
 
@@ -418,20 +444,11 @@ public class ItemDatabaseScreen extends Screen {
         graphics.outline(artBoxX, artBoxY, artBoxSize, artBoxSize, 0xFF3D1E4E);
 
         if (item != null) {
-            // --- Temporary Logger: prints only once per item ---
-            if (!item.id().equals(lastLoggedId)) {
-                lastLoggedId = item.id();
-                System.out.println("=== RAW ITEM INSPECTION ===");
-                System.out.println("RAW ITEM NAME: " + item.itemName());
-                System.out.println("RAW DESC/LORE: " + item.itemHuman());
-                System.out.println("===========================");
-            }
             String cacheKey = (item.isCrateItem() ? "crate_" : "misc_") + item.id();
             Identifier spriteLoc = TextureDownloader.getOrLoadTexture(item.iconUrl(), cacheKey);
             AnimatedTexture anim = TextureDownloader.getTextureInfo(cacheKey);
 
             if (spriteLoc != null) {
-                // Calculate scale preserving aspect ratio within max 96x96 area
                 int maxDim = 96;
                 int imgW = (anim != null && anim.width() > 0) ? anim.width() : maxDim;
                 int imgH = (anim != null && anim.height() > 0) ? anim.height() : maxDim;
@@ -440,7 +457,6 @@ public class ItemDatabaseScreen extends Screen {
                 int renderW = Math.max(1, Math.round(imgW * scale));
                 int renderH = Math.max(1, Math.round(imgH * scale));
 
-                // Center perfectly inside the 110x110 artwork frame
                 int spriteX = artBoxX + (artBoxSize - renderW) / 2;
                 int spriteY = artBoxY + (artBoxSize - renderH) / 2;
 
@@ -460,58 +476,54 @@ public class ItemDatabaseScreen extends Screen {
                 graphics.centeredText(this.font, Component.literal("§7[ Loading... ]"), artBoxX + (artBoxSize / 2), artBoxY + 50, 0xFFFFFFFF);
             }
 
-            // --- Dynamic Left Metadata ---
+            // --- 1. Dynamic Left Metadata (Below Art Box) ---
             int metaY = artBoxY + artBoxSize + 6;
+
+            // Win Chance or Group
             if (item.isCrateItem()) {
                 graphics.text(this.font, Component.literal("§6Win Chance: §e" + item.winPercentage() + "%"), artBoxX, metaY, 0xFFFFFFFF);
             } else {
-                String groupLabel = item.groupId().isEmpty() ? "None" : item.groupId();
+                String groupLabel = (item.groupId() == null || item.groupId().isEmpty()) ? "None" : item.groupId();
                 graphics.text(this.font, Component.literal("§dGroup: §f" + groupLabel), artBoxX, metaY, 0xFFFFFFFF);
             }
-            metaY += 10;
+            metaY += 11;
 
-            graphics.text(this.font, Component.literal("§8Type: " + item.imageType()), artBoxX, metaY, 0xFFFFFFFF);
-            metaY += 10;
-
-            graphics.text(this.font, Component.literal("§8ID: " + item.id()), artBoxX, metaY, 0xFFFFFFFF);
-            metaY += 10;
-
-            // Display base Minecraft item on left panel if present
-            String baseItem = extractBaseMinecraftItem(item.itemHuman());
+            // Base Item Name (e.g. netherite_hoe, elytra, paper)
+            String baseItem = resolveCleanBaseItem(item);
             if (!baseItem.isEmpty()) {
-                graphics.text(this.font, Component.literal("§8Item: §7" + baseItem), artBoxX, metaY, 0xFFFFFFFF);
-                metaY += 10;
+                graphics.text(this.font, Component.literal("§8" + baseItem), artBoxX, metaY, 0xFFFFFFFF);
+                metaY += 12;
+            } else {
+                metaY += 2;
             }
 
-            // --- Interactive Owned Pill Badge ---
-            boolean isOwned = CollectionManager.isOwned(item.id());
-            int badgeBoxX = artBoxX;
-            int badgeBoxY = metaY;
-            int badgeBoxW = artBoxSize;
-            int badgeBoxH = 13;
-
-            int badgeBg = isOwned ? 0xDD2E7D32 : 0xB01C0826;
-            int badgeBorder = isOwned ? 0xFFA5D6A7 : 0xFF5C2974;
-            graphics.fill(badgeBoxX, badgeBoxY, badgeBoxX + badgeBoxW, badgeBoxY + badgeBoxH, badgeBg);
-            graphics.outline(badgeBoxX, badgeBoxY, badgeBoxW, badgeBoxH, badgeBorder);
-
-            String badgeText = isOwned ? "§a✔ OWNED §7[Space]" : "§7☐ Unowned §8[Space]";
-            graphics.centeredText(this.font, Component.literal(badgeText), badgeBoxX + (badgeBoxW / 2), badgeBoxY + 3, 0xFFFFFFFF);
-            metaY += 16;
-
-            // --- Cooldown Pill Badge (Positioned safely above bottom border) ---
+            // Cooldown Pill Badge (Positioned directly below base item)
             if (item.hasCooldown()) {
-                String cdText = "⏱ " + item.getCooldown();
-                int cdWidth = this.font.width(cdText);
-                int badgeX = artBoxX + 1;
-                int badgeY = metaY;
+                String cooldownText = "⏱ " + item.getCooldown();
+                int badgeW = this.font.width(cooldownText) + 8;
+                int badgeH = 12;
+                int badgeBg = 0xAA003322;
+                int badgeBorder = 0xFF00FF88;
 
-                graphics.fill(badgeX - 2, badgeY - 1, badgeX + cdWidth + 4, badgeY + 11, 0xD012061A);
-                graphics.outline(badgeX - 2, badgeY - 1, cdWidth + 6, 12, 0xFFAB47BC);
-                graphics.text(this.font, Component.literal("§a" + cdText), badgeX + 1, badgeY + 1, 0xFFFFFFFF);
+                graphics.fill(artBoxX, metaY, artBoxX + badgeW, metaY + badgeH, badgeBg);
+                graphics.outline(artBoxX, metaY, badgeW, badgeH, badgeBorder);
+                graphics.text(this.font, Component.literal("§a" + cooldownText), artBoxX + 4, metaY + 2, 0xFFFFFFFF);
             }
-        } else {
-            graphics.centeredText(this.font, Component.literal("§eLoading Database..."), artBoxX + (artBoxSize / 2), artBoxY + 50, 0xFFFFFFFF);
+
+            // --- 2. Anchored Bottom Toggle (Pinned above footer bar) ---
+            int toggleBoxY = panelHeight - 40;
+            int toggleBoxW = artBoxSize;
+            int toggleBoxH = 13;
+
+            boolean isOwned = CollectionManager.isOwned(item.id());
+            int toggleBg = isOwned ? 0xDD2E7D32 : 0xB01C0826;
+            int toggleBorder = isOwned ? 0xFFA5D6A7 : 0xFF5C2974;
+
+            graphics.fill(artBoxX, toggleBoxY, artBoxX + toggleBoxW, toggleBoxY + toggleBoxH, toggleBg);
+            graphics.outline(artBoxX, toggleBoxY, toggleBoxW, toggleBoxH, toggleBorder);
+
+            String statusLabel = (isOwned ? "§a✔ Owned" : "§7☐ Unowned") + " §8[Space]";
+            graphics.centeredText(this.font, Component.literal(statusLabel), artBoxX + (toggleBoxW / 2), toggleBoxY + 3, 0xFFFFFFFF);
         }
 
         // --- Right Panel: Info & Multi-line Stats ---
@@ -519,9 +531,8 @@ public class ItemDatabaseScreen extends Screen {
         int lineY = startY + 10;
 
         if (item != null) {
-            // Parse authentic per-character hex gradient if rawData is available; fallback to formatted itemName
             Component titleComp = (item.rawData() != null && !item.rawData().isBlank())
-                    ? com.roland.itemdatabase.data.RawDataParser.parseCustomName(item.rawData(), item.itemName())
+                    ? RawDataParser.parseCustomName(item.rawData(), item.itemName())
                     : Component.literal(item.itemName().replace('&', '§').trim());
 
             int maxHeaderPixelWidth = 180;
@@ -535,7 +546,6 @@ public class ItemDatabaseScreen extends Screen {
             graphics.horizontalLine(textX, startX + panelWidth - 10, lineY, 0xFF555555);
             lineY += 6;
 
-            // Rarity or Category
             if (item.isCrateItem()) {
                 graphics.text(this.font, Component.literal("§7Rarity: §d" + item.rarityHuman()), textX, lineY, 0xFFFFFFFF);
             } else {
@@ -543,17 +553,16 @@ public class ItemDatabaseScreen extends Screen {
             }
             lineY += 12;
 
-            // Scrollable viewport bounds in local coordinates
             int viewTop = lineY;
             int viewBottom = panelHeight - 32;
             int viewHeight = viewBottom - viewTop;
 
             int maxTextWidth = panelWidth - 146;
-            List<net.minecraft.util.FormattedCharSequence> renderedLines = new ArrayList<>();
+            List<FormattedCharSequence> renderedLines = new ArrayList<>();
 
-            // 1. Try parsing exact JSON component lore from RawData first
+            // 1. Try parsing JSON component lore from RawData first
             List<Component> rawLoreComponents = (item.rawData() != null && !item.rawData().isBlank())
-                    ? com.roland.itemdatabase.data.RawDataParser.parseLore(item.rawData())
+                    ? RawDataParser.parseLore(item.rawData())
                     : List.of();
 
             if (!rawLoreComponents.isEmpty()) {
@@ -566,10 +575,10 @@ public class ItemDatabaseScreen extends Screen {
                     renderedLines.addAll(this.font.split(loreLine, maxTextWidth));
                 }
             } else {
-                // Fallback to legacy string parsing if rawData is absent
+                // Fallback to token parsing if rawData is absent
                 String rawDesc = item.itemHuman();
                 if (rawDesc != null && !rawDesc.isBlank()) {
-                    String cleanDesc = rawDesc.replaceAll("(?i)§[0-9a-fk-or]", "");
+                    String cleanDesc = CLEAN_REGEX_PATTERN.matcher(rawDesc).replaceAll("");
 
                     String normalized = cleanDesc
                             .replace("\\r\\n", "\n")
@@ -586,7 +595,7 @@ public class ItemDatabaseScreen extends Screen {
                             .replaceAll("(?<=\\d)\\s+(?=[A-Z][a-z])", "\n")
                             .replaceAll("(?<=\\d)(?=[A-Z])", "\n");
 
-                    String[] rawTokens = normalized.split("[\n\r]+|\\s*[\u2550\u2500\u25C6\u25C7\u2726\u2727\u2022\u25A0\u2748\u273F\u22EE\u25BA\u25C4]+\\s*");
+                    String[] rawTokens = TOKEN_SPLIT_PATTERN.split(normalized);
                     String canonicalItemName = item.itemName().replaceAll("[^a-zA-Z0-9]", "").toLowerCase();
 
                     for (String token : rawTokens) {
@@ -631,7 +640,7 @@ public class ItemDatabaseScreen extends Screen {
             graphics.enableScissor(textX, viewTop, panelWidth - 14, viewBottom);
 
             int drawY = viewTop - scrollOffset;
-            for (net.minecraft.util.FormattedCharSequence line : renderedLines) {
+            for (FormattedCharSequence line : renderedLines) {
                 if (drawY + 10 >= viewTop && drawY <= viewBottom) {
                     graphics.text(this.font, line, textX, drawY, 0xFFFFFFFF);
                 }
@@ -640,7 +649,7 @@ public class ItemDatabaseScreen extends Screen {
 
             graphics.disableScissor();
 
-            // Scrollbar
+            // Lore Scrollbar
             if (maxScroll > 0) {
                 int barX = startX + panelWidth - 12;
                 int barHeight = Math.max(12, (int) ((float) viewHeight / totalContentHeight * viewHeight));
@@ -677,15 +686,76 @@ public class ItemDatabaseScreen extends Screen {
         graphics.pose().popMatrix();
     }
 
-    private String extractBaseMinecraftItem(String rawDesc) {
-        if (rawDesc == null || rawDesc.isBlank()) return "";
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?i)minecraft:([a-z0-9_]+)").matcher(rawDesc);
-        if (m.find()) {
-            return m.group(1);
+    /**
+     * Resolves the clean vanilla Minecraft item identifier from raw NBT payloads or lore text.
+     */
+    private String resolveCleanBaseItem(ItemEntry item) {
+        if (item == null) return "";
+
+        // 1. Check rawData NBT / JSON
+        if (item.rawData() != null && !item.rawData().isBlank()) {
+            Matcher m = NBT_ID_PATTERN.matcher(item.rawData());
+            if (m.find()) {
+                return m.group(1).toLowerCase();
+            }
+            Matcher m2 = NBT_ALT_ID_PATTERN.matcher(item.rawData());
+            if (m2.find()) {
+                return m2.group(1).toLowerCase();
+            }
         }
+
+        // 2. Check itemHuman lore
+        if (item.itemHuman() != null && !item.itemHuman().isBlank()) {
+            String human = item.itemHuman().trim();
+            String extracted = "";
+
+            for (String line : human.split("\n")) {
+                String tl = line.trim();
+                if (tl.toLowerCase().startsWith("item:")) {
+                    extracted = tl.substring(5).trim();
+                    break;
+                }
+            }
+
+            if (extracted.isEmpty()) {
+                extracted = human;
+            }
+
+            extracted = extracted.replace("minecraft:", "").replace("Item:", "").replace("♦", "").replace("★", "").trim();
+
+            if (extracted.contains(" ")) {
+                extracted = extracted.split(" ")[0];
+            }
+
+            extracted = extracted.toLowerCase().replaceAll("[^a-z0-9_]", "");
+            if (!extracted.isEmpty() && extracted.length() < 24) {
+                return extracted;
+            }
+        }
+
+        // 3. Fallback based on metadata keywords in itemName
+        if (item.itemName() != null) {
+            String name = item.itemName().toLowerCase();
+            if (name.contains("elytra")) return "elytra";
+            if (name.contains("sword")) return "diamond_sword";
+            if (name.contains("pickaxe")) return "diamond_pickaxe";
+            if (name.contains("axe")) return "diamond_axe";
+            if (name.contains("shovel")) return "diamond_shovel";
+            if (name.contains("hoe")) return "diamond_hoe";
+            if (name.contains("helmet") || name.contains("hat")) return "leather_helmet";
+            if (name.contains("chestplate")) return "leather_chestplate";
+            if (name.contains("leggings")) return "leather_leggings";
+            if (name.contains("boots")) return "leather_boots";
+            if (name.contains("plushie") || name.contains("voucher")) return "paper";
+            if (name.contains("concrete")) return "blue_concrete";
+        }
+
         return "";
     }
 
+    /**
+     * Renders the slide-out navigation tree drawer on the left side of the card.
+     */
     private void renderCrateDrawer(GuiGraphicsExtractor graphics, float localMouseX, float localMouseY) {
         if (!isDrawerOpen) return;
 
@@ -713,7 +783,7 @@ public class ItemDatabaseScreen extends Screen {
         String filterQuery = (this.searchBox != null) ? this.searchBox.getValue().trim().toLowerCase() : "";
         boolean isFiltering = !filterQuery.isEmpty();
 
-        // --- Mode Selector: [ Crates | Misc | Tags ] ---
+        // --- Mode Selector: [ Crates | Misc | Tags | Collect ] ---
         int modeY = searchY + 18;
         ViewCategory[] modes = ViewCategory.values();
         int modeW = (drawerWidth - 8) / modes.length;
@@ -778,11 +848,11 @@ public class ItemDatabaseScreen extends Screen {
 
             graphics.horizontalLine(drawerX + 4, drawerX + drawerWidth - 4, tabY + 16, 0xFF3D1650);
 
-            List<com.roland.itemdatabase.data.CrateEntry> filteredCrates = DatabaseManager.CRATES.values().stream()
+            List<CrateEntry> filteredCrates = DatabaseManager.CRATES.values().stream()
                     .filter(c -> c.crateType().equalsIgnoreCase(selectedTab.label()))
                     .toList();
 
-            for (com.roland.itemdatabase.data.CrateEntry crate : filteredCrates) {
+            for (CrateEntry crate : filteredCrates) {
                 List<ItemEntry> visibleItems = isFiltering
                         ? crate.items().stream().filter(it -> it.itemName().toLowerCase().contains(filterQuery) || it.id().contains(filterQuery)).toList()
                         : crate.items();
@@ -801,7 +871,7 @@ public class ItemDatabaseScreen extends Screen {
 
             graphics.enableScissor(drawerX + 4, viewTop, drawerX + drawerWidth - 4, viewBottom);
 
-            for (com.roland.itemdatabase.data.CrateEntry crate : filteredCrates) {
+            for (CrateEntry crate : filteredCrates) {
                 List<ItemEntry> visibleItems = isFiltering
                         ? crate.items().stream().filter(it -> it.itemName().toLowerCase().contains(filterQuery) || it.id().contains(filterQuery)).toList()
                         : crate.items();
@@ -812,14 +882,12 @@ public class ItemDatabaseScreen extends Screen {
 
                 boolean isExpanded = isFiltering || (crate.id() == expandedCrateId);
 
-                // Get the authentic gradient Component from the crate's items
                 Component baseHeader = crate.getFormattedHeader(isExpanded);
-
                 int count = visibleItems.size();
                 Component countComp = Component.literal(" §8(" + count + ")");
 
                 int maxHeaderWidth = drawerWidth - 20;
-                net.minecraft.network.chat.MutableComponent crateHeaderComp = Component.empty();
+                MutableComponent crateHeaderComp = Component.empty();
 
                 if (this.font.width(baseHeader.getString() + " (" + count + ")") > maxHeaderWidth) {
                     int available = maxHeaderWidth - this.font.width(countComp);
@@ -832,8 +900,7 @@ public class ItemDatabaseScreen extends Screen {
                     graphics.text(this.font, crateHeaderComp, drawerX + 6, currentY, 0xFFFFFFFF);
                 }
 
-                int rowYCapture = currentY;
-                drawerClickables.add(new ClickableRow(drawerX + 4, rowYCapture, drawerWidth - 8, 12, () -> {
+                drawerClickables.add(new ClickableRow(drawerX + 4, currentY, drawerWidth - 8, 12, () -> {
                     if (!isFiltering) {
                         expandedCrateId = (expandedCrateId == crate.id()) ? -1 : crate.id();
                     }
@@ -860,31 +927,26 @@ public class ItemDatabaseScreen extends Screen {
                             String statusIcon = owned ? "§a✔ " : "§8• ";
                             String prefix = isCurrent ? "  §e▶ " : "  " + statusIcon;
 
-                            // Use the full per-character gradient from RawData if available; otherwise fallback to rarity color
-                            net.minecraft.network.chat.Component nameComp = (item.rawData() != null && !item.rawData().isBlank())
-                                    ? com.roland.itemdatabase.data.RawDataParser.parseCustomName(item.rawData(), item.itemName())
-                                    : net.minecraft.network.chat.Component.literal(getRarityColor(item.rarityHuman()) + item.itemName());
+                            Component nameComp = (item.rawData() != null && !item.rawData().isBlank())
+                                    ? RawDataParser.parseCustomName(item.rawData(), item.itemName())
+                                    : Component.literal(getRarityColor(item.rarityHuman()) + item.itemName());
 
-                            // If currently selected, highlight with bold white; otherwise keep its gradient/rarity color
-                            net.minecraft.network.chat.Component finalName = isCurrent
-                                    ? net.minecraft.network.chat.Component.literal("§f§l" + nameComp.getString())
+                            Component finalName = isCurrent
+                                    ? Component.literal("§f§l" + nameComp.getString())
                                     : nameComp;
 
-                            // Combine the prefix and item component into a single formatted line
-                            net.minecraft.network.chat.MutableComponent itemRowComp = net.minecraft.network.chat.Component.literal(prefix).append(finalName);
+                            MutableComponent itemRowComp = Component.literal(prefix).append(finalName);
 
-                            // Safely truncate to fit the drawer width while preserving formatting
                             int availableTextWidth = drawerWidth - 24;
                             if (this.font.width(itemRowComp) > availableTextWidth) {
                                 String truncated = this.font.substrByWidth(itemRowComp, availableTextWidth - 8).getString();
-                                graphics.text(this.font, net.minecraft.network.chat.Component.literal(truncated + ".."), drawerX + 8, currentY, 0xFFFFFFFF);
+                                graphics.text(this.font, Component.literal(truncated + ".."), drawerX + 8, currentY, 0xFFFFFFFF);
                             } else {
                                 graphics.text(this.font, itemRowComp, drawerX + 8, currentY, 0xFFFFFFFF);
                             }
                         }
 
-                        int itemYCapture = currentY;
-                        drawerClickables.add(new ClickableRow(drawerX + 8, itemYCapture, drawerWidth - 12, 10, () -> {
+                        drawerClickables.add(new ClickableRow(drawerX + 8, currentY, drawerWidth - 12, 10, () -> {
                             this.currentCategory = ViewCategory.CRATES;
                             updateItemList();
                             for (int idx = 0; idx < items.size(); idx++) {
@@ -929,7 +991,7 @@ public class ItemDatabaseScreen extends Screen {
 
             graphics.horizontalLine(drawerX + 4, drawerX + drawerWidth - 4, tabY + 16, 0xFF3D1650);
 
-            List<com.roland.itemdatabase.data.MiscGroupEntry> filteredGroups = DatabaseManager.MISC_GROUPS.values().stream()
+            List<MiscGroupEntry> filteredGroups = DatabaseManager.MISC_GROUPS.values().stream()
                     .filter(g -> {
                         if (selectedMiscTab == MiscTab.UNSORTED) {
                             return g.groupType() == null
@@ -942,7 +1004,7 @@ public class ItemDatabaseScreen extends Screen {
                     })
                     .toList();
 
-            for (com.roland.itemdatabase.data.MiscGroupEntry group : filteredGroups) {
+            for (MiscGroupEntry group : filteredGroups) {
                 List<ItemEntry> visibleItems = isFiltering
                         ? group.items().stream().filter(it -> it.itemName().toLowerCase().contains(filterQuery) || it.id().contains(filterQuery)).toList()
                         : group.items();
@@ -961,7 +1023,7 @@ public class ItemDatabaseScreen extends Screen {
 
             graphics.enableScissor(drawerX + 4, viewTop, drawerX + drawerWidth - 4, viewBottom);
 
-            for (com.roland.itemdatabase.data.MiscGroupEntry group : filteredGroups) {
+            for (MiscGroupEntry group : filteredGroups) {
                 List<ItemEntry> visibleItems = isFiltering
                         ? group.items().stream().filter(it -> it.itemName().toLowerCase().contains(filterQuery) || it.id().contains(filterQuery)).toList()
                         : group.items();
@@ -974,14 +1036,12 @@ public class ItemDatabaseScreen extends Screen {
 
                 Component arrowComp = Component.literal(isExpanded ? "§d▼ " : "§8▶ ");
                 Component baseHeader = group.getFormattedHeader();
-
                 int count = visibleItems.size();
                 Component countComp = Component.literal(" §8(" + count + ")");
 
-                // Calculate available width specifically for the title text
                 int maxTitleWidth = drawerWidth - 20 - this.font.width(arrowComp) - this.font.width(countComp);
 
-                net.minecraft.network.chat.MutableComponent groupRowComp = Component.empty();
+                MutableComponent groupRowComp = Component.empty();
                 groupRowComp.append(arrowComp);
 
                 if (this.font.width(baseHeader) > maxTitleWidth) {
@@ -989,15 +1049,13 @@ public class ItemDatabaseScreen extends Screen {
                 } else {
                     groupRowComp.append(baseHeader);
                 }
-
                 groupRowComp.append(countComp);
 
                 if (currentY + 10 >= viewTop && currentY <= viewBottom) {
                     graphics.text(this.font, groupRowComp, drawerX + 6, currentY, 0xFFFFFFFF);
                 }
 
-                int rowYCapture = currentY;
-                drawerClickables.add(new ClickableRow(drawerX + 4, rowYCapture, drawerWidth - 8, 12, () -> {
+                drawerClickables.add(new ClickableRow(drawerX + 4, currentY, drawerWidth - 8, 12, () -> {
                     if (!isFiltering) {
                         expandedMiscGroupId = (expandedMiscGroupId == group.id()) ? -1 : group.id();
                     }
@@ -1024,29 +1082,26 @@ public class ItemDatabaseScreen extends Screen {
                             String statusIcon = owned ? "§a✔ " : "§8• ";
                             String prefix = isCurrent ? "  §e▶ " : "  " + statusIcon;
 
-                            // Use gradient from RawData if available; fallback to rarity color
-                            net.minecraft.network.chat.Component miscNameComp = (item.rawData() != null && !item.rawData().isBlank())
-                                    ? com.roland.itemdatabase.data.RawDataParser.parseCustomName(item.rawData(), item.itemName())
-                                    : net.minecraft.network.chat.Component.literal(getRarityColor(item.rarityHuman()) + item.itemName());
+                            Component miscNameComp = (item.rawData() != null && !item.rawData().isBlank())
+                                    ? RawDataParser.parseCustomName(item.rawData(), item.itemName())
+                                    : Component.literal(getRarityColor(item.rarityHuman()) + item.itemName());
 
-                            // Bold white when selected
-                            net.minecraft.network.chat.Component finalMiscName = isCurrent
-                                    ? net.minecraft.network.chat.Component.literal("§f§l" + miscNameComp.getString())
+                            Component finalMiscName = isCurrent
+                                    ? Component.literal("§f§l" + miscNameComp.getString())
                                     : miscNameComp;
 
-                            net.minecraft.network.chat.MutableComponent miscRowComp = net.minecraft.network.chat.Component.literal(prefix).append(finalMiscName);
+                            MutableComponent miscRowComp = Component.literal(prefix).append(finalMiscName);
 
                             int availableTextWidth = drawerWidth - 24;
                             if (this.font.width(miscRowComp) > availableTextWidth) {
                                 String truncated = this.font.substrByWidth(miscRowComp, availableTextWidth - 8).getString();
-                                graphics.text(this.font, net.minecraft.network.chat.Component.literal(truncated + ".."), drawerX + 8, currentY, 0xFFFFFFFF);
+                                graphics.text(this.font, Component.literal(truncated + ".."), drawerX + 8, currentY, 0xFFFFFFFF);
                             } else {
                                 graphics.text(this.font, miscRowComp, drawerX + 8, currentY, 0xFFFFFFFF);
                             }
                         }
 
-                        int itemYCapture = currentY;
-                        drawerClickables.add(new ClickableRow(drawerX + 8, itemYCapture, drawerWidth - 12, 10, () -> {
+                        drawerClickables.add(new ClickableRow(drawerX + 8, currentY, drawerWidth - 12, 10, () -> {
                             this.currentCategory = ViewCategory.MISC;
                             updateItemList();
                             for (int idx = 0; idx < items.size(); idx++) {
@@ -1068,7 +1123,7 @@ public class ItemDatabaseScreen extends Screen {
             // ========================================================
             // TAG CATEGORY TABS: Carousel Category Header
             // ========================================================
-            com.roland.itemdatabase.data.TagCategory[] tagCats = com.roland.itemdatabase.data.TagCategory.values();
+            TagCategory[] tagCats = TagCategory.values();
             int catBtnW = drawerWidth - 8;
 
             graphics.fill(drawerX + 4, tabY, drawerX + 4 + catBtnW, tabY + 14, 0xFF692A82);
@@ -1084,12 +1139,10 @@ public class ItemDatabaseScreen extends Screen {
 
             graphics.horizontalLine(drawerX + 4, drawerX + drawerWidth - 4, tabY + 16, 0xFF3D1650);
 
-            // Combine all items across Crate and Misc caches
             List<ItemEntry> allItems = new ArrayList<>();
             allItems.addAll(DatabaseManager.CRATE_ITEMS.values());
             allItems.addAll(DatabaseManager.MISC_ITEMS.values());
 
-            // Calculate height for scrolling
             for (String tag : selectedTagCategory.tags()) {
                 List<ItemEntry> matching = allItems.stream()
                         .filter(it -> it.hasTag(tag))
@@ -1124,8 +1177,7 @@ public class ItemDatabaseScreen extends Screen {
                     graphics.text(this.font, Component.literal(rowText), drawerX + 6, currentY, 0xFFFFFFFF);
                 }
 
-                int tagYCapture = currentY;
-                drawerClickables.add(new ClickableRow(drawerX + 4, tagYCapture, drawerWidth - 8, 12, () -> {
+                drawerClickables.add(new ClickableRow(drawerX + 4, currentY, drawerWidth - 8, 12, () -> {
                     if (!isFiltering) {
                         expandedTagName = tag.equalsIgnoreCase(expandedTagName) ? null : tag;
                     }
@@ -1166,8 +1218,7 @@ public class ItemDatabaseScreen extends Screen {
                             graphics.text(this.font, Component.literal(prefix + textFormat + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
                         }
 
-                        int itemYCapture = currentY;
-                        drawerClickables.add(new ClickableRow(drawerX + 8, itemYCapture, drawerWidth - 12, 10, () -> {
+                        drawerClickables.add(new ClickableRow(drawerX + 8, currentY, drawerWidth - 12, 10, () -> {
                             this.items.clear();
                             this.items.addAll(allItems);
                             for (int idx = 0; idx < items.size(); idx++) {
@@ -1244,10 +1295,9 @@ public class ItemDatabaseScreen extends Screen {
             int collViewTop = filterY + 16;
             int collViewHeight = viewBottom - collViewTop;
 
-            // Group items by crate and calculate heights
-            List<com.roland.itemdatabase.data.CrateEntry> allCrates = new ArrayList<>(DatabaseManager.CRATES.values());
+            List<CrateEntry> allCrates = new ArrayList<>(DatabaseManager.CRATES.values());
 
-            for (com.roland.itemdatabase.data.CrateEntry crate : allCrates) {
+            for (CrateEntry crate : allCrates) {
                 List<ItemEntry> crateMatching = crate.items().stream()
                         .filter(it -> {
                             boolean owned = CollectionManager.isOwned(it.id());
@@ -1271,10 +1321,7 @@ public class ItemDatabaseScreen extends Screen {
             drawerMaxScroll = Math.max(0, totalHeight - collViewHeight);
             graphics.enableScissor(drawerX + 4, collViewTop, drawerX + drawerWidth - 4, viewBottom);
 
-            int currentDrawY = collViewTop - drawerScrollOffset;
-
-            for (com.roland.itemdatabase.data.CrateEntry crate : allCrates) {
-                // Calculate crate-level owned count
+            for (CrateEntry crate : allCrates) {
                 int crateOwned = 0;
                 for (ItemEntry it : crate.items()) {
                     if (CollectionManager.isOwned(it.id())) crateOwned++;
@@ -1305,32 +1352,31 @@ public class ItemDatabaseScreen extends Screen {
                     crateHeader += "...";
                 }
 
-                if (currentDrawY + 10 >= collViewTop && currentDrawY <= viewBottom) {
-                    graphics.text(this.font, Component.literal(crateHeader), drawerX + 6, currentDrawY, 0xFFFFFFFF);
+                if (currentY + 10 >= collViewTop && currentY <= viewBottom) {
+                    graphics.text(this.font, Component.literal(crateHeader), drawerX + 6, currentY, 0xFFFFFFFF);
                 }
 
-                int rowYCap = currentDrawY;
-                drawerClickables.add(new ClickableRow(drawerX + 4, rowYCap, drawerWidth - 8, 12, () -> {
+                drawerClickables.add(new ClickableRow(drawerX + 4, currentY, drawerWidth - 8, 12, () -> {
                     if (!isFiltering) {
                         expandedCollectionCrateId = (expandedCollectionCrateId == crate.id()) ? -1 : crate.id();
                     }
                 }));
-                currentDrawY += 12;
+                currentY += 12;
 
                 if (isExpanded) {
                     for (ItemEntry item : crateMatching) {
-                        if (currentDrawY + 10 >= collViewTop && currentDrawY <= viewBottom) {
+                        if (currentY + 10 >= collViewTop && currentY <= viewBottom) {
                             boolean isCurrent = !this.items.isEmpty()
                                     && this.currentIndex < this.items.size()
                                     && this.items.get(this.currentIndex).id().equals(item.id());
 
                             boolean isHovered = localMouseX >= drawerX + 4 && localMouseX <= drawerX + drawerWidth - 4
-                                    && localMouseY >= currentDrawY - 1 && localMouseY < currentDrawY + 10;
+                                    && localMouseY >= currentY - 1 && localMouseY < currentY + 10;
 
                             if (isCurrent) {
-                                graphics.fill(drawerX + 6, currentDrawY - 1, drawerX + drawerWidth - 6, currentDrawY + 10, 0x55BA68C8);
+                                graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x55BA68C8);
                             } else if (isHovered) {
-                                graphics.fill(drawerX + 6, currentDrawY - 1, drawerX + drawerWidth - 6, currentDrawY + 10, 0x35FFFFFF);
+                                graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
                             }
 
                             boolean owned = CollectionManager.isOwned(item.id());
@@ -1347,11 +1393,10 @@ public class ItemDatabaseScreen extends Screen {
                                 cleanName += "..";
                             }
 
-                            graphics.text(this.font, Component.literal(prefix + textFormat + cleanName), drawerX + 8, currentDrawY, 0xFFFFFFFF);
+                            graphics.text(this.font, Component.literal(prefix + textFormat + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
                         }
 
-                        int itemYCap = currentDrawY;
-                        drawerClickables.add(new ClickableRow(drawerX + 8, itemYCap, drawerWidth - 12, 10, () -> {
+                        drawerClickables.add(new ClickableRow(drawerX + 8, currentY, drawerWidth - 12, 10, () -> {
                             for (int idx = 0; idx < items.size(); idx++) {
                                 if (items.get(idx).id().equals(item.id())) {
                                     this.currentIndex = idx;
@@ -1360,7 +1405,7 @@ public class ItemDatabaseScreen extends Screen {
                                 }
                             }
                         }));
-                        currentDrawY += 10;
+                        currentY += 10;
                     }
                 }
             }
@@ -1379,18 +1424,6 @@ public class ItemDatabaseScreen extends Screen {
         }
     }
 
-    @Override
-    protected void init() {
-        super.init();
-        this.searchBox = new EditBox(this.font, 0, 0, drawerWidth - 12, 14, Component.literal("Search..."));
-        this.searchBox.setHint(Component.literal("§8Search items..."));
-        this.searchBox.setMaxLength(32);
-        this.searchBox.setResponder(s -> {
-            this.drawerScrollOffset = 0;
-        });
-        this.addWidget(this.searchBox);
-    }
-
     private String getRarityColor(String rarity) {
         if (rarity == null) return "§7";
         return switch (rarity.trim().toUpperCase()) {
@@ -1405,41 +1438,35 @@ public class ItemDatabaseScreen extends Screen {
         };
     }
 
-    private static String formatColors(String text) {
-        if (text == null) return "";
-        return text.replace('&', '§');
-    }
-
     /**
      * Safely truncates a Component to fit within maxWidth, preserving all styles and colors.
      */
-    private net.minecraft.network.chat.Component truncateComponent(net.minecraft.network.chat.Component comp, int maxWidth) {
+    private Component truncateComponent(Component comp, int maxWidth) {
         if (this.font.width(comp) <= maxWidth) {
             return comp;
         }
         int targetWidth = maxWidth - this.font.width("..");
         if (targetWidth <= 0) return comp;
 
-        net.minecraft.network.chat.MutableComponent truncated = net.minecraft.network.chat.Component.empty();
+        MutableComponent truncated = Component.empty();
         comp.visit((style, text) -> {
             char[] chars = text.toCharArray();
             for (int i = 0; i < chars.length; i++) {
-                // If this is a formatting code, grab both characters together
                 if (chars[i] == '§' && i + 1 < chars.length) {
-                    truncated.append(net.minecraft.network.chat.Component.literal("§" + chars[i + 1]));
+                    truncated.append(Component.literal("§" + chars[i + 1]));
                     i++;
                     continue;
                 }
                 String ch = String.valueOf(chars[i]);
                 if (this.font.width(truncated.getString() + ch) <= targetWidth) {
-                    truncated.append(net.minecraft.network.chat.Component.literal(ch).setStyle(style));
+                    truncated.append(Component.literal(ch).setStyle(style));
                 } else {
-                    return java.util.Optional.of(true);
+                    return Optional.of(true);
                 }
             }
-            return java.util.Optional.empty();
-        }, net.minecraft.network.chat.Style.EMPTY);
+            return Optional.empty();
+        }, Style.EMPTY);
 
-        return truncated.append(net.minecraft.network.chat.Component.literal(".."));
+        return truncated.append(Component.literal(".."));
     }
 }

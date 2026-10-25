@@ -12,65 +12,124 @@ import net.minecraft.network.chat.TextColor;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * High-performance parser for converting BlossomCraft raw item JSON/NBT payloads
+ * into native Minecraft {@link Component} hierarchies with full color and style support.
+ */
 public class RawDataParser {
 
     /**
-     * Parses custom_name from RawData into a formatted Minecraft Component
-     * preserving all per-character hex gradients.
+     * Parses the item display name from raw data, preserving per-character hex gradients.
+     * Supports modern components (`minecraft:custom_name`) and legacy tags (`display.Name`).
+     *
+     * @param rawDataJson Serialized JSON/NBT string from the backend.
+     * @param fallback    Default text if the name cannot be resolved.
+     * @return Formatted Component representing the item title.
      */
     public static Component parseCustomName(String rawDataJson, String fallback) {
         if (rawDataJson == null || rawDataJson.isBlank()) {
             return Component.literal(fallback);
         }
+
         try {
-            JsonObject root = JsonParser.parseString(rawDataJson).getAsJsonObject();
-            JsonObject components = root.getAsJsonObject("components");
-            if (components != null && components.has("minecraft:custom_name")) {
-                JsonElement nameElem = components.get("minecraft:custom_name");
-                return parseTextComponent(nameElem);
+            JsonElement parsed = JsonParser.parseString(rawDataJson);
+            if (!parsed.isJsonObject()) {
+                return Component.literal(fallback);
+            }
+
+            JsonObject root = parsed.getAsJsonObject();
+
+            // 1. Modern Minecraft 1.20.5+ component structure
+            if (root.has("components") && root.get("components").isJsonObject()) {
+                JsonObject components = root.getAsJsonObject("components");
+                if (components.has("minecraft:custom_name")) {
+                    return parseTextComponent(components.get("minecraft:custom_name"));
+                }
+            }
+
+            // 2. Legacy NBT tag structure (tag.display.Name)
+            if (root.has("tag") && root.get("tag").isJsonObject()) {
+                JsonObject tag = root.getAsJsonObject("tag");
+                if (tag.has("display") && tag.get("display").isJsonObject()) {
+                    JsonObject display = tag.getAsJsonObject("display");
+                    if (display.has("Name")) {
+                        return parseTextComponent(display.get("Name"));
+                    }
+                }
             }
         } catch (Exception ignored) {}
+
         return Component.literal(fallback);
     }
 
     /**
-     * Parses the lore array from RawData into a list of formatted Minecraft Components.
-     * Accurately parses nested/stringified JSON lines.
+     * Parses the item lore array from raw data into formatted Component lines.
+     * Supports modern components (`minecraft:lore`) and legacy tags (`display.Lore`).
+     *
+     * @param rawDataJson Serialized JSON/NBT string from the backend.
+     * @return Ordered list of formatted lore Components.
      */
     public static List<Component> parseLore(String rawDataJson) {
         List<Component> lines = new ArrayList<>();
         if (rawDataJson == null || rawDataJson.isBlank()) {
             return lines;
         }
+
         try {
-            JsonObject root = JsonParser.parseString(rawDataJson).getAsJsonObject();
-            JsonObject components = root.getAsJsonObject("components");
-            if (components != null && components.has("minecraft:lore")) {
-                JsonArray loreArray = components.getAsJsonArray("minecraft:lore");
-                for (JsonElement lineElem : loreArray) {
-                    Component parsed = parseTextComponent(lineElem);
-                    lines.add(parsed);
+            JsonElement parsed = JsonParser.parseString(rawDataJson);
+            if (!parsed.isJsonObject()) {
+                return lines;
+            }
+
+            JsonObject root = parsed.getAsJsonObject();
+
+            // 1. Modern Minecraft 1.20.5+ component structure
+            if (root.has("components") && root.get("components").isJsonObject()) {
+                JsonObject components = root.getAsJsonObject("components");
+                if (components.has("minecraft:lore") && components.get("minecraft:lore").isJsonArray()) {
+                    for (JsonElement lineElem : components.getAsJsonArray("minecraft:lore")) {
+                        lines.add(parseTextComponent(lineElem));
+                    }
+                    return lines;
+                }
+            }
+
+            // 2. Legacy NBT tag structure (tag.display.Lore)
+            if (root.has("tag") && root.get("tag").isJsonObject()) {
+                JsonObject tag = root.getAsJsonObject("tag");
+                if (tag.has("display") && tag.get("display").isJsonObject()) {
+                    JsonObject display = tag.getAsJsonObject("display");
+                    if (display.has("Lore") && display.get("Lore").isJsonArray()) {
+                        for (JsonElement lineElem : display.getAsJsonArray("Lore")) {
+                            lines.add(parseTextComponent(lineElem));
+                        }
+                    }
                 }
             }
         } catch (Exception ignored) {}
+
         return lines;
     }
 
     /**
-     * Recursively parses Minecraft text component JSON into a MutableComponent.
-     * Detects stringified JSON components and unpacks them.
+     * Recursively converts a JSON element into a {@link MutableComponent}.
+     * Handles raw primitives, formatting codes, embedded/stringified JSON, and sibling arrays.
+     *
+     * @param element JSON node to parse.
+     * @return Renderable MutableComponent with full styling applied.
      */
     public static MutableComponent parseTextComponent(JsonElement element) {
         if (element == null || element.isJsonNull()) {
             return Component.empty();
         }
 
-        // If it's a string, check if it's actually an embedded/escaped JSON component
+        // Handle string primitives (unpacking stringified JSON when present)
         if (element.isJsonPrimitive()) {
             String str = element.getAsString();
-            if (str.trim().startsWith("{") && str.trim().endsWith("}")) {
+            String trimmed = str.trim();
+            if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
                 try {
-                    JsonElement inner = JsonParser.parseString(str);
+                    JsonElement inner = JsonParser.parseString(trimmed);
                     if (inner.isJsonObject()) {
                         return parseTextComponent(inner);
                     }
@@ -79,12 +138,14 @@ public class RawDataParser {
             return Component.literal(str.replace('&', '§'));
         }
 
+        // Handle JSON Object components
         if (element.isJsonObject()) {
             JsonObject obj = element.getAsJsonObject();
             String text = obj.has("text") ? obj.get("text").getAsString().replace('&', '§') : "";
             MutableComponent comp = Component.literal(text);
 
             Style style = Style.EMPTY;
+
             if (obj.has("color")) {
                 String colorStr = obj.get("color").getAsString();
                 TextColor color = TextColor.parseColor(colorStr).result().orElse(null);
@@ -92,6 +153,7 @@ public class RawDataParser {
                     style = style.withColor(color);
                 }
             }
+
             if (obj.has("bold")) style = style.withBold(obj.get("bold").getAsBoolean());
             if (obj.has("italic")) style = style.withItalic(obj.get("italic").getAsBoolean());
             if (obj.has("underlined")) style = style.withUnderlined(obj.get("underlined").getAsBoolean());
@@ -100,11 +162,13 @@ public class RawDataParser {
 
             comp.setStyle(style);
 
+            // Recursively process sibling extra elements
             if (obj.has("extra") && obj.get("extra").isJsonArray()) {
                 for (JsonElement extraElem : obj.getAsJsonArray("extra")) {
                     comp.append(parseTextComponent(extraElem));
                 }
             }
+
             return comp;
         }
 
@@ -113,15 +177,22 @@ public class RawDataParser {
 
     /**
      * Extracts a formatted title or thematic badge component from an item's lore.
-     * Guaranteed Priority:
-     * 1. Season line (Season X: ...) ALWAYS takes top priority.
-     * 2. Specific Crate line (ignoring generic "Blossom Crate" if a specific name is present).
-     * 3. Item title's own gradient if no header lore line exists.
+     * <ol>
+     *     <li>Top priority: Season indicator lines ({@code Season X: ...}).</li>
+     *     <li>Specific crate banner lines (filtering out generic placeholders).</li>
+     *     <li>Decorative star/flower badges ({@code ✦}, {@code ❀}, {@code ★}).</li>
+     *     <li>Fallback to custom name gradient.</li>
+     * </ol>
+     *
+     * @param rawDataJson   Raw item payload.
+     * @param fallbackTitle Title to use if no thematic line exists.
+     * @return Formatted Component header.
      */
     public static Component extractThematicHeader(String rawDataJson, String fallbackTitle) {
         if (rawDataJson == null || rawDataJson.isBlank()) {
             return Component.literal(fallbackTitle);
         }
+
         try {
             List<Component> lore = parseLore(rawDataJson);
             Component specificCrateBanner = null;
@@ -130,12 +201,12 @@ public class RawDataParser {
                 String plain = line.getString().trim();
                 String lower = plain.toLowerCase();
 
-                // 1. TOP PRIORITY: Any Season line
+                // 1. Season lines
                 if (lower.startsWith("season")) {
                     return line;
                 }
 
-                // 2. Specific Crate Banner (skip generic "blossom crate" so it doesn't mask seasons)
+                // 2. Specific Crate banners
                 if (lower.contains("crate") && (plain.contains("▶") || plain.contains("►") || plain.contains("•"))) {
                     if (!lower.contains("blossom crate")) {
                         String cleaned = plain.replaceAll("[▶◀►◄]", "").trim();
@@ -151,7 +222,7 @@ public class RawDataParser {
                 return specificCrateBanner;
             }
 
-            // 3. Decorative stars / banners
+            // 3. Decorative badges
             for (Component line : lore) {
                 String plain = line.getString().trim();
                 if (plain.startsWith("✦") || plain.startsWith("❀") || plain.startsWith("★")) {
@@ -159,7 +230,7 @@ public class RawDataParser {
                 }
             }
 
-            // 4. If no lore banner exists, extract the gradient palette directly from the item's custom_name!
+            // 4. Fallback: Extract from custom name
             Component customName = parseCustomName(rawDataJson, "");
             if (customName != null && !customName.getString().isBlank()) {
                 return customName;

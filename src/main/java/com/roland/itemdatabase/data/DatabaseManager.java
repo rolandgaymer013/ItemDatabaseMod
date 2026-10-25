@@ -11,13 +11,16 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.ArrayList;
 
+/**
+ * Handles asynchronous communication with the BlossomCraft item database REST API.
+ * Parses, caches, and cross-references crate items, miscellaneous items, categories, and tags.
+ */
 public class DatabaseManager {
     private static final String API_BASE = "https://items.blossomcraft.org";
     private static final HttpClient CLIENT = HttpClient.newBuilder()
@@ -25,17 +28,20 @@ public class DatabaseManager {
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
-    // Cache: Item ID -> ItemEntry
+    // Primary item caches: Item ID -> ItemEntry
     public static final Map<String, ItemEntry> CRATE_ITEMS = new ConcurrentHashMap<>();
     public static final Map<String, ItemEntry> MISC_ITEMS = new ConcurrentHashMap<>();
 
-    // ITEM_CACHE remains pointed at CRATE_ITEMS for backwards compatibility
+    // Backwards-compatibility alias for CRATE_ITEMS
     public static final Map<String, ItemEntry> ITEM_CACHE = CRATE_ITEMS;
 
-    public static final Map<Integer, CrateEntry> CRATES = new LinkedHashMap<>();
-
+    // Category / Group caches
+    public static final Map<Integer, CrateEntry> CRATES = new ConcurrentHashMap<>();
     public static final Map<Integer, MiscGroupEntry> MISC_GROUPS = new ConcurrentHashMap<>();
 
+    /**
+     * Initializes the client database by preloading all crates, misc items, and grouping trees in parallel.
+     */
     public static CompletableFuture<Boolean> preloadDatabase() {
         return CompletableFuture.allOf(
                 fetchCrateItems(),
@@ -53,12 +59,13 @@ public class DatabaseManager {
         preloadDatabase();
     }
 
+    /**
+     * Fetches all crate items from /api/items.
+     */
     public static CompletableFuture<Boolean> fetchCrateItems() {
-        String requestedFields = "id;ItemName;ItemHuman;RarityHuman;WinPercentage;ImageType;Notes;Tags";
-
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(API_BASE + "/api/items"))
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                 .header("Accept", "application/json")
                 .header("I-INCLUDED-INFO", "*")
                 .timeout(Duration.ofSeconds(15))
@@ -83,12 +90,13 @@ public class DatabaseManager {
                 });
     }
 
+    /**
+     * Fetches all miscellaneous server items from /api/miscitems.
+     */
     public static CompletableFuture<Boolean> fetchMiscItems() {
-        String requestedFields = "id;GroupID;ItemName;Notes;ItemHuman;ImageType;Tags";
-
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(API_BASE + "/api/miscitems"))
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                 .header("Accept", "application/json")
                 .header("I-INCLUDED-INFO", "*")
                 .timeout(Duration.ofSeconds(15))
@@ -168,7 +176,7 @@ public class DatabaseManager {
         String iconUrl = API_BASE + "/static/images/Icons/" + id + "." + imageType.toLowerCase();
 
         // Extract the 7 database tag columns
-        java.util.List<String> tagsList = new java.util.ArrayList<>();
+        List<String> tagsList = new ArrayList<>();
         String[] tagKeys = {
                 "TagPrimary", "TagSecondary", "TagTertiary",
                 "TagQuaternary", "TagQuinary", "TagSenary", "TagSeptenary"
@@ -245,13 +253,9 @@ public class DatabaseManager {
         String group = getStringSafe(obj, "GroupID", "");
         String notes = getStringSafe(obj, "Notes", "");
 
-        // Confirmed live folder: /static/images/Misc_Icons/
         String iconUrl = API_BASE + "/static/images/Misc_Icons/" + id + "." + imageType;
 
-        // Collect tags for misc items
-        java.util.List<String> tagsList = new java.util.ArrayList<>();
-
-        // 1. Check for the 7 tag columns if present in misc items
+        List<String> tagsList = new ArrayList<>();
         String[] tagKeys = {
                 "TagPrimary", "TagSecondary", "TagTertiary",
                 "TagQuaternary", "TagQuinary", "TagSenary", "TagSeptenary"
@@ -263,7 +267,6 @@ public class DatabaseManager {
             }
         }
 
-        // 2. Also register the group label/type as a tag if non-empty
         if (!group.isBlank() && !group.equalsIgnoreCase("null") && !group.equalsIgnoreCase("none")) {
             tagsList.add(group.trim());
         }
@@ -278,10 +281,10 @@ public class DatabaseManager {
                 (!group.isBlank() ? group.toUpperCase() : "MISC"), // rarityHuman
                 notes,                                             // notes
                 group,                                             // groupId
-                "",                                                // crateId (empty for misc)
+                "",                                                // crateId
                 iconUrl,
                 false,                                             // isCrateItem
-                tagsList                                           // tags
+                tagsList
         ));
     }
 
@@ -296,6 +299,9 @@ public class DatabaseManager {
         return element.getAsString();
     }
 
+    /**
+     * Fetches metadata for all active crates from /api/crates.
+     */
     public static CompletableFuture<Void> fetchCrates() {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(API_BASE + "/api/crates"))
@@ -328,7 +334,10 @@ public class DatabaseManager {
                 });
     }
 
-    public static void mapItemsToCrates() {
+    /**
+     * Maps cached Crate items into their parent CrateEntry containers.
+     */
+    public static synchronized void mapItemsToCrates() {
         for (CrateEntry crate : CRATES.values()) {
             crate.items().clear();
         }
@@ -377,6 +386,9 @@ public class DatabaseManager {
                 mappedCount, unmappedCount, CRATES.size());
     }
 
+    /**
+     * Fetches metadata for all miscellaneous groups from /api/miscgroups.
+     */
     public static CompletableFuture<Boolean> fetchMiscGroups() {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(API_BASE + "/api/miscgroups"))
@@ -426,7 +438,10 @@ public class DatabaseManager {
         }
     }
 
-    public static void mapItemsToMiscGroups() {
+    /**
+     * Maps cached Misc items into their parent MiscGroupEntry containers.
+     */
+    public static synchronized void mapItemsToMiscGroups() {
         for (MiscGroupEntry group : MISC_GROUPS.values()) {
             group.items().clear();
         }

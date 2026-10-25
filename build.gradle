@@ -22,16 +22,19 @@ dependencies {
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 }
 
+def modVersion = project.version.toString()
+def archivesBaseName = project.base.archivesName.get().toString()
+
 processResources {
-    def version = project.version
-    inputs.property "version", version
+    inputs.property "version", modVersion
 
     filesMatching("fabric.mod.json") {
-        expand "version": version
+        expand "version": modVersion
     }
 }
 
 tasks.withType(JavaCompile).configureEach {
+    it.options.encoding = "UTF-8"
     it.options.release = 25
 }
 
@@ -42,11 +45,10 @@ java {
 }
 
 jar {
-    def projectName = project.base.archivesName.get()
-    inputs.property "projectName", projectName
+    inputs.property "archivesBaseName", archivesBaseName
 
     from("LICENSE") {
-        rename { "${it}_$projectName" }
+        rename { "${it}_${archivesBaseName}" }
     }
 }
 

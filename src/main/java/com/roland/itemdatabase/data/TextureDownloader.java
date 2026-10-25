@@ -2,6 +2,7 @@ package com.roland.itemdatabase.data;
 
 import com.mojang.blaze3d.platform.NativeImage;
 import com.roland.itemdatabase.ItemDatabase;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.Identifier;
@@ -13,6 +14,7 @@ import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
 import javax.imageio.metadata.IIOMetadata;
 import javax.imageio.stream.ImageInputStream;
+import java.awt.AlphaComposite;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
@@ -23,20 +25,29 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Handles asynchronous downloading, disk caching, GIF frame parsing, and dynamic
+ * OpenGL texture registration on the Minecraft client render thread.
+ */
 public class TextureDownloader {
     private static final HttpClient CLIENT = HttpClient.newBuilder()
+            .followRedirects(HttpClient.Redirect.ALWAYS)
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
     private static final Map<String, AnimatedTexture> ANIMATED_CACHE = new ConcurrentHashMap<>();
     private static final Set<String> PENDING_DOWNLOADS = Collections.synchronizedSet(new HashSet<>());
-    private static final Path CACHE_DIR = Paths.get("itemdatabase_cache");
+
+    // Store cached textures under .cache/itemdatabase inside the game directory
+    private static final Path CACHE_DIR = FabricLoader.getInstance()
+            .getGameDir()
+            .resolve(".cache")
+            .resolve("itemdatabase");
 
     static {
         try {
@@ -48,12 +59,28 @@ public class TextureDownloader {
         }
     }
 
+    /**
+     * Retrieves cached animation metadata and frame timing for a texture key.
+     *
+     * @param cacheKey Unique texture identifier.
+     * @return AnimatedTexture record, or null if not yet loaded.
+     */
     public static AnimatedTexture getTextureInfo(String cacheKey) {
-        return ANIMATED_CACHE.get(cacheKey);
+        return (cacheKey != null) ? ANIMATED_CACHE.get(cacheKey) : null;
     }
 
+    /**
+     * Requests a texture by URL. Returns the current active frame identifier immediately if cached;
+     * otherwise dispatches an asynchronous network download and returns null.
+     *
+     * @param url      Web URL of the texture resource.
+     * @param cacheKey Unique key used for caching in memory and disk.
+     * @return Registered active Minecraft Identifier, or null while loading.
+     */
     public static Identifier getOrLoadTexture(String url, String cacheKey) {
-        if (url == null || url.isBlank()) return null;
+        if (url == null || url.isBlank() || cacheKey == null || cacheKey.isBlank()) {
+            return null;
+        }
 
         AnimatedTexture anim = ANIMATED_CACHE.get(cacheKey);
         if (anim != null) {
@@ -70,7 +97,8 @@ public class TextureDownloader {
     private static void loadOrDownloadAsync(String url, String cacheKey) {
         CompletableFuture.runAsync(() -> {
             boolean isGif = url.toLowerCase().endsWith(".gif");
-            String fileName = cacheKey.replaceAll("[^a-zA-Z0-9_-]", "_") + (isGif ? ".gif" : ".png");
+            String safeBaseName = cacheKey.toLowerCase().replaceAll("[^a-z0-9_-]", "_");
+            String fileName = safeBaseName + (isGif ? ".gif" : ".png");
             Path localFile = CACHE_DIR.resolve(fileName);
 
             // 1. Check local disk cache
@@ -87,33 +115,38 @@ public class TextureDownloader {
             }
 
             // 2. Fetch from network if not cached locally
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("User-Agent", "Mozilla/5.0")
-                    .timeout(Duration.ofSeconds(12))
-                    .GET()
-                    .build();
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("User-Agent", "Mozilla/5.0")
+                        .timeout(Duration.ofSeconds(12))
+                        .GET()
+                        .build();
 
-            CLIENT.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                    .thenAccept(response -> {
-                        if (response.statusCode() == 200) {
-                            byte[] body = response.body();
-                            try {
-                                Files.write(localFile, body);
-                            } catch (Exception e) {
-                                ItemDatabase.LOGGER.warn("[ItemDatabase] Failed writing to disk cache: {}", localFile, e);
+                CLIENT.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
+                        .thenAccept(response -> {
+                            if (response.statusCode() == 200) {
+                                byte[] body = response.body();
+                                try {
+                                    Files.write(localFile, body);
+                                } catch (Exception e) {
+                                    ItemDatabase.LOGGER.warn("[ItemDatabase] Failed writing to disk cache: {}", localFile, e);
+                                }
+                                decodeAndRegister(body, cacheKey, isGif);
+                            } else {
+                                ItemDatabase.LOGGER.warn("[ItemDatabase] Download returned non-200: {} status={}", url, response.statusCode());
+                                PENDING_DOWNLOADS.remove(cacheKey);
                             }
-                            decodeAndRegister(body, cacheKey, isGif);
-                        } else {
-                            ItemDatabase.LOGGER.warn("[ItemDatabase] Failed download: {} status={}", url, response.statusCode());
+                        })
+                        .exceptionally(ex -> {
+                            ItemDatabase.LOGGER.error("[ItemDatabase] Network exception downloading {}", url, ex);
                             PENDING_DOWNLOADS.remove(cacheKey);
-                        }
-                    })
-                    .exceptionally(ex -> {
-                        ItemDatabase.LOGGER.error("[ItemDatabase] Network exception downloading {}", url, ex);
-                        PENDING_DOWNLOADS.remove(cacheKey);
-                        return null;
-                    });
+                            return null;
+                        });
+            } catch (Exception ex) {
+                ItemDatabase.LOGGER.error("[ItemDatabase] Invalid URL syntax: {}", url, ex);
+                PENDING_DOWNLOADS.remove(cacheKey);
+            }
         });
     }
 
@@ -178,13 +211,13 @@ public class TextureDownloader {
                             delays.add(delayMs);
 
                             if ("restoreToBackgroundColor".equalsIgnoreCase(disposal)) {
-                                masterGraphics.setComposite(java.awt.AlphaComposite.Clear);
+                                masterGraphics.setComposite(AlphaComposite.Clear);
                                 masterGraphics.fillRect(frameMeta.x, frameMeta.y, frameImage.getWidth(), frameImage.getHeight());
-                                masterGraphics.setComposite(java.awt.AlphaComposite.SrcOver);
+                                masterGraphics.setComposite(AlphaComposite.SrcOver);
                             } else if ("restoreToPrevious".equalsIgnoreCase(disposal) && backup != null) {
-                                masterGraphics.setComposite(java.awt.AlphaComposite.Src);
+                                masterGraphics.setComposite(AlphaComposite.Src);
                                 masterGraphics.drawImage(backup, 0, 0, null);
-                                masterGraphics.setComposite(java.awt.AlphaComposite.SrcOver);
+                                masterGraphics.setComposite(AlphaComposite.SrcOver);
                             }
                         }
 
@@ -195,6 +228,7 @@ public class TextureDownloader {
                 }
             }
 
+            // Fallback to static PNG / image reader if GIF parsing yields no frames
             if (frames.isEmpty()) {
                 BufferedImage staticImg = ImageIO.read(new ByteArrayInputStream(bytes));
                 if (staticImg != null) {
@@ -213,18 +247,22 @@ public class TextureDownloader {
             final int finalWidth = canvasWidth;
             final int finalHeight = canvasHeight;
 
+            // Submit dynamic texture registration to Minecraft's main render loop
             Minecraft.getInstance().execute(() -> {
                 try {
                     List<Identifier> identifiers = new ArrayList<>();
                     int totalDuration = 0;
 
+                    String sanitizedKey = cacheKey.toLowerCase().replaceAll("[^a-z0-9_.-]", "_");
+
                     for (int i = 0; i < frames.size(); i++) {
                         BufferedImage frame = frames.get(i);
                         ByteArrayOutputStream baos = new ByteArrayOutputStream();
                         ImageIO.write(frame, "png", baos);
-                        NativeImage nativeImage = NativeImage.read(new ByteArrayInputStream(baos.toByteArray()));
 
-                        Identifier id = Identifier.fromNamespaceAndPath("itemdatabase", "dynamic/" + cacheKey.toLowerCase() + "_f" + i);
+                        NativeImage nativeImage = NativeImage.read(new ByteArrayInputStream(baos.toByteArray()));
+                        Identifier id = Identifier.fromNamespaceAndPath("itemdatabase", "dynamic/" + sanitizedKey + "_f" + i);
+
                         DynamicTexture dynamicTexture = new DynamicTexture(id::toString, nativeImage);
                         Minecraft.getInstance().getTextureManager().register(id, dynamicTexture);
 
@@ -234,14 +272,14 @@ public class TextureDownloader {
 
                     ANIMATED_CACHE.put(cacheKey, new AnimatedTexture(identifiers, delays, totalDuration, finalWidth, finalHeight));
                 } catch (Exception e) {
-                    ItemDatabase.LOGGER.error("[ItemDatabase] Failed registering dynamic texture: {}", cacheKey, e);
+                    ItemDatabase.LOGGER.error("[ItemDatabase] Failed registering dynamic texture for: {}", cacheKey, e);
                 } finally {
                     PENDING_DOWNLOADS.remove(cacheKey);
                 }
             });
 
         } catch (Exception e) {
-            ItemDatabase.LOGGER.error("[ItemDatabase] Decoding error: {}", cacheKey, e);
+            ItemDatabase.LOGGER.error("[ItemDatabase] Decoding error for: {}", cacheKey, e);
             PENDING_DOWNLOADS.remove(cacheKey);
         }
     }

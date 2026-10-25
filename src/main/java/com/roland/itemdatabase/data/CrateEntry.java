@@ -4,10 +4,23 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.network.chat.Style;
 import net.minecraft.network.chat.TextColor;
+import net.minecraft.util.Mth;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
+/**
+ * Represents a crate category in BlossomCraft containing grouped items.
+ * Handles dynamic title styling, custom gradient extraction, and banner resolution.
+ *
+ * @param id          Unique numeric crate ID.
+ * @param name        Display name of the crate.
+ * @param releaseDate Release date timestamp or string.
+ * @param urlTag      Slug identifier used for web resources.
+ * @param crateType   Category grouping (e.g., Seasonal, Side, Misc).
+ * @param items       List of items contained in this crate.
+ */
 public record CrateEntry(
         int id,
         String name,
@@ -20,6 +33,17 @@ public record CrateEntry(
         this(id, name, releaseDate, urlTag, crateType, new ArrayList<>());
     }
 
+    public CrateEntry {
+        items = (items != null) ? items : new ArrayList<>();
+    }
+
+    /**
+     * Resolves and formats the crate's display header component for the navigation tree.
+     * Extracts authentic seasonal lore banners or calculates a custom theme gradient.
+     *
+     * @param isExpanded Whether this crate folder is currently open in the tree view.
+     * @return Formatted Minecraft Component ready for rendering.
+     */
     public Component getFormattedHeader(boolean isExpanded) {
         String arrow = isExpanded ? "§d▼ " : "§8▶ ";
 
@@ -29,8 +53,8 @@ public record CrateEntry(
             cleanName = "Christmas Crate";
         }
 
-        if (items != null && !items.isEmpty()) {
-            // 1. If this is a Seasonal Crate, find the line starting with "Season"
+        if (!items.isEmpty()) {
+            // 1. Seasonal Crates: Find lore line starting with "Season"
             if ("Seasonal".equalsIgnoreCase(crateType) || name.toLowerCase().startsWith("season")) {
                 for (ItemEntry it : items) {
                     if (it.rawData() != null && !it.rawData().isBlank()) {
@@ -45,7 +69,7 @@ public record CrateEntry(
                 }
             }
 
-            // 2. Specific Crate Banners (e.g. ▶ ELYTRA CRATE ◀, ▶ CONCRETE CRATE ◀, ▶ Halloween Crate ◀)
+            // 2. Specific Crate Banners (e.g. ▶ ELYTRA CRATE ◀, ▶ CONCRETE CRATE ◀)
             for (ItemEntry it : items) {
                 if (it.rawData() != null && !it.rawData().isBlank()) {
                     List<Component> lore = RawDataParser.parseLore(it.rawData());
@@ -53,7 +77,7 @@ public record CrateEntry(
                         String plain = line.getString().trim();
                         String lower = plain.toLowerCase();
 
-                        // Skip ability/instruction lines that happen to mention the crate word
+                        // Skip ability or instruction lines that happen to mention "crate"
                         if (plain.startsWith(">") || lower.startsWith("sneak") || lower.startsWith("grants")
                                 || lower.startsWith("emits") || lower.startsWith("immune") || lower.startsWith("chance")) {
                             continue;
@@ -70,11 +94,11 @@ public record CrateEntry(
                                 if (!filtered.isEmpty()) {
                                     banner.append(Component.literal(filtered).setStyle(style));
                                 }
-                                return java.util.Optional.empty();
+                                return Optional.empty();
                             }, Style.EMPTY);
 
                             String trimmedPlain = banner.getString().trim();
-                            if (!trimmedPlain.isEmpty() && trimmedPlain.length() >= 3) {
+                            if (trimmedPlain.length() >= 3) {
                                 return Component.literal(arrow).append(banner);
                             }
                         }
@@ -85,7 +109,6 @@ public record CrateEntry(
             // 3. Known themed fallbacks for crates without clean banners
             String lowerName = cleanName.toLowerCase();
             if (lowerName.contains("concrete")) {
-                // Concrete rainbow palette: Green -> Pink -> Cyan (from the website banner)
                 List<TextColor> concretePalette = List.of(
                         TextColor.fromRgb(0x55FF55), // Green
                         TextColor.fromRgb(0xFF55FF), // Pink
@@ -94,11 +117,10 @@ public record CrateEntry(
                 return Component.literal(arrow).append(applyGradient("CONCRETE CRATE", concretePalette));
             }
             if (lowerName.contains("terracotta")) {
-                // Terracotta warm gradient: Orange -> Gold -> Light Red
                 List<TextColor> terracottaPalette = List.of(
-                        TextColor.fromRgb(0xFFAA00),
-                        TextColor.fromRgb(0xFFFF55),
-                        TextColor.fromRgb(0xFF5555)
+                        TextColor.fromRgb(0xFFAA00), // Orange
+                        TextColor.fromRgb(0xFFFF55), // Gold
+                        TextColor.fromRgb(0xFF5555)  // Light Red
                 );
                 return Component.literal(arrow).append(applyGradient("TERRACOTTA CRATE", terracottaPalette));
             }
@@ -110,7 +132,7 @@ public record CrateEntry(
                 return Component.literal(arrow).append(applyGradient("Halloween Crate", halloweenPalette));
             }
 
-            // 4. Sample palette from item custom names (ignoring pure black/dark gray values)
+            // 4. Sample palette from item custom names (ignoring dark colors for readability)
             List<TextColor> palette = new ArrayList<>();
             for (ItemEntry it : items) {
                 if (it.rawData() != null && !it.rawData().isBlank()) {
@@ -118,15 +140,16 @@ public record CrateEntry(
                     nameComp.visit((style, text) -> {
                         if (style.getColor() != null && !text.isBlank()) {
                             int val = style.getColor().getValue();
-                            // Skip pure black or dark colors (brightness threshold) so text remains readable
-                            int r = (val >> 16) & 0xFF, g = (val >> 8) & 0xFF, b = val & 0xFF;
+                            int r = (val >> 16) & 0xFF;
+                            int g = (val >> 8) & 0xFF;
+                            int b = val & 0xFF;
                             if (r + g + b > 120) {
                                 if (palette.isEmpty() || !palette.get(palette.size() - 1).equals(style.getColor())) {
                                     palette.add(style.getColor());
                                 }
                             }
                         }
-                        return java.util.Optional.empty();
+                        return Optional.empty();
                     }, Style.EMPTY);
 
                     if (palette.size() >= 2) break;
@@ -138,12 +161,16 @@ public record CrateEntry(
             }
         }
 
+        // Default styling if no banners or custom palettes exist
         String fallbackColor = "Side".equalsIgnoreCase(crateType) ? "§6" : "§f";
         return Component.literal(arrow + fallbackColor + cleanName);
     }
 
+    /**
+     * Interpolates RGB colors across a string of text character by character.
+     */
     private static Component applyGradient(String text, List<TextColor> palette) {
-        if (palette.isEmpty()) return Component.literal(text);
+        if (palette == null || palette.isEmpty()) return Component.literal(text);
         if (palette.size() == 1 || text.length() <= 1) {
             return Component.literal(text).setStyle(Style.EMPTY.withColor(palette.get(0)));
         }
@@ -161,9 +188,12 @@ public record CrateEntry(
             int c1 = palette.get(idx).getValue();
             int c2 = palette.get(nextIdx).getValue();
 
-            int r = (int) (((c1 >> 16) & 0xFF) + ((((c2 >> 16) & 0xFF) - ((c1 >> 16) & 0xFF)) * factor));
-            int g = (int) (((c1 >> 8) & 0xFF) + ((((c2 >> 8) & 0xFF) - ((c1 >> 8) & 0xFF)) * factor));
-            int b = (int) ((c1 & 0xFF) + (((c2 & 0xFF) - (c1 & 0xFF)) * factor));
+            int r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
+            int r2 = (c2 >> 16) & 0xFF, g2 = (c2 >> 8) & 0xFF, b2 = c2 & 0xFF;
+
+            int r = Mth.clamp((int) (r1 + (r2 - r1) * factor), 0, 255);
+            int g = Mth.clamp((int) (g1 + (g2 - g1) * factor), 0, 255);
+            int b = Mth.clamp((int) (b1 + (b2 - b1) * factor), 0, 255);
 
             comp.append(Component.literal(String.valueOf(text.charAt(i)))
                     .setStyle(Style.EMPTY.withColor(TextColor.fromRgb((r << 16) | (g << 8) | b))));
