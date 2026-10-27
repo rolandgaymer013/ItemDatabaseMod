@@ -153,4 +153,15 @@ public record ItemEntry(
                 tags
         );
     }
+
+    /**
+     * @return Item name stripped of color codes and symbol decorators for clean matching/suggestions.
+     */
+    public String getCleanName() {
+        if (this.itemName == null) return "";
+        return this.itemName
+                .replaceAll("(?i)§[0-9a-fk-or]", "")
+                .replaceAll("[✦★♦❀•▶◀►◄]", "")
+                .trim();
+    }
 }

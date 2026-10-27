@@ -69,7 +69,8 @@ public class ItemDatabaseScreen extends Screen {
     public enum CollectionFilter {
         ALL("All"),
         OWNED("Owned"),
-        MISSING("Missing");
+        MISSING("Missing"),
+        WISHLIST("Wishlist");
 
         private final String label;
         CollectionFilter(String label) { this.label = label; }
@@ -110,9 +111,15 @@ public class ItemDatabaseScreen extends Screen {
 
     // Drawer state
     private boolean isDrawerOpen = false;
-    private final int drawerWidth = 200;
+    private final int drawerWidth = 250;
     private int drawerScrollOffset = 0;
     private int drawerMaxScroll = 0;
+
+    // Expanded folder tracking for Collection Mode (Approach B) - all closed by default
+    private boolean isCrateSectionExpanded = false;
+    private boolean isMiscSectionExpanded = false;
+    private final java.util.Set<String> expandedCollectionCrateTabs = new java.util.HashSet<>();
+    private final java.util.Set<String> expandedCollectionMiscTabs = new java.util.HashSet<>();
 
     // Sub-tab category selections
     private CrateTab selectedTab = CrateTab.SEASONAL;
@@ -153,6 +160,20 @@ public class ItemDatabaseScreen extends Screen {
     private void updateItemList() {
         this.items.clear();
 
+        // Ensure crate item mappings exist if data loaded asynchronously
+        if (!DatabaseManager.CRATES.isEmpty() && !DatabaseManager.CRATE_ITEMS.isEmpty()) {
+            boolean needsMapping = false;
+            for (CrateEntry c : DatabaseManager.CRATES.values()) {
+                if (c.items().isEmpty()) {
+                    needsMapping = true;
+                    break;
+                }
+            }
+            if (needsMapping) {
+                DatabaseManager.mapItemsToCrates();
+            }
+        }
+
         switch (currentCategory) {
             case CRATES -> this.items.addAll(DatabaseManager.CRATE_ITEMS.values());
             case MISC -> this.items.addAll(DatabaseManager.MISC_ITEMS.values());
@@ -166,20 +187,26 @@ public class ItemDatabaseScreen extends Screen {
                 combined.addAll(DatabaseManager.MISC_ITEMS.values());
 
                 for (ItemEntry it : combined) {
-                    boolean owned = CollectionManager.isOwned(it.id());
+                    boolean owned = CollectionManager.isOwned(it);
+                    boolean wishlisted = CollectionManager.isWishlisted(it);
+
                     if (collectionFilter == CollectionFilter.ALL) {
                         this.items.add(it);
                     } else if (collectionFilter == CollectionFilter.OWNED && owned) {
                         this.items.add(it);
                     } else if (collectionFilter == CollectionFilter.MISSING && !owned) {
                         this.items.add(it);
+                    } else if (collectionFilter == CollectionFilter.WISHLIST && wishlisted) {
+                        this.items.add(it);
                     }
                 }
-            }
-        }
 
-        if (!DatabaseManager.CRATES.isEmpty() && !DatabaseManager.CRATE_ITEMS.isEmpty()) {
-            DatabaseManager.mapItemsToCrates();
+                // If the filter resulted in 0 items (e.g. empty Wishlist or 0 Owned),
+                // populate with all items so the card never vanishes into a null state
+                if (this.items.isEmpty()) {
+                    this.items.addAll(combined);
+                }
+            }
         }
 
         if (!this.items.isEmpty() && this.currentIndex >= this.items.size()) {
@@ -289,6 +316,39 @@ public class ItemDatabaseScreen extends Screen {
                 }
             }
         }
+
+        // Check clicks on the card's [Space] Owned and [W] Wishlist buttons
+        if (event.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+            float centerX = (this.width / 2.0F) + cardOffsetX;
+            float centerY = (this.height / 2.0F) + cardOffsetY;
+            float localMouseX = (float) ((event.x() - centerX) / uiScale + panelWidth / 2.0F);
+            float localMouseY = (float) ((event.y() - centerY) / uiScale + panelHeight / 2.0F);
+
+            ItemEntry cur = getCurrentItem();
+            if (cur != null) {
+                int artBoxX = 10;
+                int toggleBoxY = panelHeight - 40;
+                int artBoxSize = 110;
+                int buttonGap = 4;
+                int btnW = (artBoxSize - buttonGap) / 2;
+                int btnH = 13;
+
+                // Clicked [Space] Owned button
+                if (localMouseX >= artBoxX && localMouseX <= artBoxX + btnW
+                        && localMouseY >= toggleBoxY && localMouseY <= toggleBoxY + btnH) {
+                    CollectionManager.toggleOwned(cur);
+                    return true;
+                }
+
+                // Clicked [W] Wishlist button
+                int wishX = artBoxX + btnW + buttonGap;
+                if (localMouseX >= wishX && localMouseX <= wishX + btnW
+                        && localMouseY >= toggleBoxY && localMouseY <= toggleBoxY + btnH) {
+                    CollectionManager.toggleWishlist(cur);
+                    return true;
+                }
+            }
+        }
         return super.mouseClicked(event, bl);
     }
 
@@ -351,10 +411,16 @@ public class ItemDatabaseScreen extends Screen {
         if (keyCode == GLFW.GLFW_KEY_SPACE) {
             ItemEntry current = getCurrentItem();
             if (current != null) {
-                CollectionManager.toggleOwned(current.id());
-                if (currentCategory == ViewCategory.COLLECTION && collectionFilter != CollectionFilter.ALL) {
-                    updateItemList();
-                }
+                CollectionManager.toggleOwned(current);
+                return true;
+            }
+        }
+
+        // Toggle Wishlist state on currently viewed item with W
+        if (keyCode == GLFW.GLFW_KEY_W) {
+            ItemEntry current = getCurrentItem();
+            if (current != null) {
+                CollectionManager.toggleWishlist(current);
                 return true;
             }
         }
@@ -427,6 +493,7 @@ public class ItemDatabaseScreen extends Screen {
 
         // Render drawer when opened
         renderCrateDrawer(graphics, localMouseX, localMouseY);
+        item = getCurrentItem(); // Refresh item immediately after drawer rendering
 
         int startX = 0;
         int startY = 0;
@@ -510,20 +577,30 @@ public class ItemDatabaseScreen extends Screen {
                 graphics.text(this.font, Component.literal("§a" + cooldownText), artBoxX + 4, metaY + 2, 0xFFFFFFFF);
             }
 
-            // --- 2. Anchored Bottom Toggle (Pinned above footer bar) ---
+            // --- 2. Anchored Bottom Toggles: Owned [Space] & Wishlist [W] ---
             int toggleBoxY = panelHeight - 40;
-            int toggleBoxW = artBoxSize;
-            int toggleBoxH = 13;
+            int buttonGap = 4;
+            int btnW = (artBoxSize - buttonGap) / 2;
+            int btnH = 13;
 
-            boolean isOwned = CollectionManager.isOwned(item.id());
-            int toggleBg = isOwned ? 0xDD2E7D32 : 0xB01C0826;
-            int toggleBorder = isOwned ? 0xFFA5D6A7 : 0xFF5C2974;
+            // [Space] Owned Button
+            boolean isOwned = CollectionManager.isOwned(item);
+            int ownedBg = isOwned ? 0xDD2E7D32 : 0xB01C0826;
+            int ownedBorder = isOwned ? 0xFFA5D6A7 : 0xFF5C2974;
+            graphics.fill(artBoxX, toggleBoxY, artBoxX + btnW, toggleBoxY + btnH, ownedBg);
+            graphics.outline(artBoxX, toggleBoxY, btnW, btnH, ownedBorder);
+            String ownedLabel = isOwned ? "§a✔ Owned" : "§7☐ Own";
+            graphics.centeredText(this.font, Component.literal(ownedLabel), artBoxX + (btnW / 2), toggleBoxY + 3, 0xFFFFFFFF);
 
-            graphics.fill(artBoxX, toggleBoxY, artBoxX + toggleBoxW, toggleBoxY + toggleBoxH, toggleBg);
-            graphics.outline(artBoxX, toggleBoxY, toggleBoxW, toggleBoxH, toggleBorder);
-
-            String statusLabel = (isOwned ? "§a✔ Owned" : "§7☐ Unowned") + " §8[Space]";
-            graphics.centeredText(this.font, Component.literal(statusLabel), artBoxX + (toggleBoxW / 2), toggleBoxY + 3, 0xFFFFFFFF);
+            // [W] Wishlist Button
+            int wishX = artBoxX + btnW + buttonGap;
+            boolean isWish = CollectionManager.isWishlisted(item);
+            int wishBg = isWish ? 0xDD996515 : 0xB01C0826;
+            int wishBorder = isWish ? 0xFFFFD700 : 0xFF5C2974;
+            graphics.fill(wishX, toggleBoxY, wishX + btnW, toggleBoxY + btnH, wishBg);
+            graphics.outline(wishX, toggleBoxY, btnW, btnH, wishBorder);
+            String wishLabel = isWish ? "§6★ Wish" : "§7☆ Wish";
+            graphics.centeredText(this.font, Component.literal(wishLabel), wishX + (btnW / 2), toggleBoxY + 3, 0xFFFFFFFF);
         }
 
         // --- Right Panel: Info & Multi-line Stats ---
@@ -632,6 +709,47 @@ public class ItemDatabaseScreen extends Screen {
 
             if (!item.isCrateItem() && !item.notes().isBlank()) {
                 renderedLines.addAll(this.font.split(Component.literal("§eNote: §7" + item.notes()), maxTextWidth));
+            }
+
+            // Ensure Misc items get a proper styled badge without duplicates
+            if (!item.isCrateItem()) {
+                String groupName = resolveGroupName(item);
+                if (groupName != null && !groupName.isBlank()) {
+                    boolean hasSpecificCrate = false;
+                    int genericBlossomLineIndex = -1;
+
+                    // Inspect the actual rendered text lines
+                    for (int i = 0; i < renderedLines.size(); i++) {
+                        StringBuilder sb = new StringBuilder();
+                        renderedLines.get(i).accept((idx, style, codePoint) -> {
+                            sb.appendCodePoint(codePoint);
+                            return true;
+                        });
+                        String lineText = sb.toString().toLowerCase();
+
+                        if (lineText.contains("▶") || lineText.contains("►")) {
+                            if (lineText.contains("blossom crate")) {
+                                genericBlossomLineIndex = i;
+                            } else {
+                                // Already has a real, specific crate badge (e.g. "PIRATE COVE CRATE")
+                                hasSpecificCrate = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    // If it does NOT have an existing specific crate line:
+                    if (!hasSpecificCrate) {
+                        // If it had a generic placeholder line, remove it
+                        if (genericBlossomLineIndex != -1) {
+                            renderedLines.remove(genericBlossomLineIndex);
+                        }
+
+                        // Append the clean, styled group badge
+                        String styledBadge = "§7▶ §a§l" + groupName.toUpperCase() + " §7◀";
+                        renderedLines.addAll(this.font.split(Component.literal(styledBadge), maxTextWidth));
+                    }
+                }
             }
 
             int totalContentHeight = renderedLines.size() * 10;
@@ -809,6 +927,12 @@ public class ItemDatabaseScreen extends Screen {
             drawerClickables.add(new ClickableRow(mx, modeY, modeW, 13, () -> {
                 this.currentCategory = mode;
                 this.drawerScrollOffset = 0;
+                this.currentIndex = 0;
+                this.scrollOffset = 0;
+                if (mode == ViewCategory.COLLECTION) {
+                    this.expandedCollectionCrateId = -1;
+                    this.expandedMiscGroupId = -1;
+                }
                 updateItemList();
             }));
         }
@@ -923,7 +1047,7 @@ public class ItemDatabaseScreen extends Screen {
                                 graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
                             }
 
-                            boolean owned = CollectionManager.isOwned(item.id());
+                            boolean owned = CollectionManager.isOwned(item);
                             String statusIcon = owned ? "§a✔ " : "§8• ";
                             String prefix = isCurrent ? "  §e▶ " : "  " + statusIcon;
 
@@ -937,7 +1061,7 @@ public class ItemDatabaseScreen extends Screen {
 
                             MutableComponent itemRowComp = Component.literal(prefix).append(finalName);
 
-                            int availableTextWidth = drawerWidth - 24;
+                            int availableTextWidth = drawerWidth - 28;
                             if (this.font.width(itemRowComp) > availableTextWidth) {
                                 String truncated = this.font.substrByWidth(itemRowComp, availableTextWidth - 8).getString();
                                 graphics.text(this.font, Component.literal(truncated + ".."), drawerX + 8, currentY, 0xFFFFFFFF);
@@ -1078,7 +1202,7 @@ public class ItemDatabaseScreen extends Screen {
                                 graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
                             }
 
-                            boolean owned = CollectionManager.isOwned(item.id());
+                            boolean owned = CollectionManager.isOwned(item);
                             String statusIcon = owned ? "§a✔ " : "§8• ";
                             String prefix = isCurrent ? "  §e▶ " : "  " + statusIcon;
 
@@ -1203,7 +1327,7 @@ public class ItemDatabaseScreen extends Screen {
                             String cleanName = item.itemName().replaceAll("(?i)§[0-9a-fk-or]", "").trim();
                             String rarityColor = getRarityColor(item.rarityHuman());
 
-                            boolean owned = CollectionManager.isOwned(item.id());
+                            boolean owned = CollectionManager.isOwned(item);
                             String statusIcon = owned ? "§a✔ " : "§8• ";
                             String prefix = isCurrent ? "  §e▶ " : "  " + statusIcon;
                             String textFormat = isCurrent ? "§f§l" : rarityColor;
@@ -1238,37 +1362,43 @@ public class ItemDatabaseScreen extends Screen {
 
         } else if (currentCategory == ViewCategory.COLLECTION) {
             // ========================================================
-            // COLLECTION MODE: Grouped by Crate with Completion Counts
+            // COLLECTION MODE (Approach B: Categorized Hierarchical Tree)
             // ========================================================
             List<ItemEntry> totalAll = new ArrayList<>();
             totalAll.addAll(DatabaseManager.CRATE_ITEMS.values());
             totalAll.addAll(DatabaseManager.MISC_ITEMS.values());
 
             int totalCount = totalAll.size();
-            int ownedCount = 0;
+            int filterCount = 0;
             for (ItemEntry it : totalAll) {
-                if (CollectionManager.isOwned(it.id())) ownedCount++;
+                if (collectionFilter == CollectionFilter.WISHLIST) {
+                    if (CollectionManager.isWishlisted(it)) filterCount++;
+                } else if (collectionFilter == CollectionFilter.MISSING) {
+                    if (!CollectionManager.isOwned(it)) filterCount++;
+                } else {
+                    if (CollectionManager.isOwned(it)) filterCount++;
+                }
             }
 
-            int percent = totalCount > 0 ? (int) ((ownedCount / (float) totalCount) * 100) : 0;
+            int percent = totalCount > 0 ? (int) ((filterCount / (float) totalCount) * 100) : 0;
 
             // --- Progress Header ---
             graphics.fill(drawerX + 4, tabY, drawerX + drawerWidth - 4, tabY + 14, 0xFF220D30);
             graphics.outline(drawerX + 4, tabY, drawerWidth - 8, 14, 0xFF4A1A5E);
 
-            int barWidth = (int) (((drawerWidth - 12) * ownedCount) / (float) Math.max(1, totalCount));
+            int barWidth = (int) (((drawerWidth - 12) * filterCount) / (float) Math.max(1, totalCount));
             if (barWidth > 0) {
                 graphics.fill(drawerX + 6, tabY + 2, drawerX + 6 + barWidth, tabY + 12, 0xAA8E24AA);
             }
             graphics.centeredText(
                     this.font,
-                    Component.literal("§6" + ownedCount + "§7/§f" + totalCount + " §e(" + percent + "%)"),
+                    Component.literal("§6" + filterCount + "§7/§f" + totalCount + " §e(" + percent + "%)"),
                     drawerX + (drawerWidth / 2),
                     tabY + 3,
                     0xFFFFFFFF
             );
 
-            // --- Filter Buttons: [ All | Owned | Missing ] ---
+            // --- Filter Buttons: [ All | Owned | Missing | Wishlist ] ---
             int filterY = tabY + 17;
             CollectionFilter[] filters = CollectionFilter.values();
             int filterW = (drawerWidth - 8) / filters.length;
@@ -1288,6 +1418,8 @@ public class ItemDatabaseScreen extends Screen {
                 drawerClickables.add(new ClickableRow(fx, filterY, filterW, 13, () -> {
                     this.collectionFilter = f;
                     this.drawerScrollOffset = 0;
+                    this.currentIndex = 0;
+                    this.scrollOffset = 0;
                     updateItemList();
                 }));
             }
@@ -1295,117 +1427,431 @@ public class ItemDatabaseScreen extends Screen {
             int collViewTop = filterY + 16;
             int collViewHeight = viewBottom - collViewTop;
 
-            List<CrateEntry> allCrates = new ArrayList<>(DatabaseManager.CRATES.values());
+            // --- Pass 1: Measure Total Height for Scrollbar ---
+            totalHeight = 0;
 
-            for (CrateEntry crate : allCrates) {
-                List<ItemEntry> crateMatching = crate.items().stream()
-                        .filter(it -> {
-                            boolean owned = CollectionManager.isOwned(it.id());
+            // 1. Crate Section Height
+            totalHeight += 12; // "CRATE COLLECTIONS" header
+            if (isFiltering || isCrateSectionExpanded) {
+                for (CrateTab tab : CrateTab.values()) {
+                    List<CrateEntry> tabCrates = DatabaseManager.CRATES.values().stream()
+                            .filter(c -> c.crateType().equalsIgnoreCase(tab.label()))
+                            .toList();
+
+                    int matchingCratesInTab = 0;
+                    int tabMatchingItemCount = 0;
+                    for (CrateEntry crate : tabCrates) {
+                        List<ItemEntry> crateMatching = crate.items().stream().filter(it -> {
+                            boolean owned = CollectionManager.isOwned(it);
+                            boolean wish = CollectionManager.isWishlisted(it);
                             if (collectionFilter == CollectionFilter.OWNED && !owned) return false;
                             if (collectionFilter == CollectionFilter.MISSING && owned) return false;
+                            if (collectionFilter == CollectionFilter.WISHLIST && !wish) return false;
                             return !isFiltering || it.itemName().toLowerCase().contains(filterQuery) || it.id().contains(filterQuery);
-                        })
-                        .toList();
+                        }).toList();
 
-                if (crateMatching.isEmpty() && (isFiltering || collectionFilter != CollectionFilter.ALL)) {
-                    continue;
+                        if (!crateMatching.isEmpty() || (!isFiltering && collectionFilter == CollectionFilter.ALL)) {
+                            matchingCratesInTab++;
+                            if (isFiltering || crate.id() == expandedCollectionCrateId) {
+                                tabMatchingItemCount += crateMatching.size();
+                            }
+                        }
+                    }
+
+                    if (matchingCratesInTab > 0 || (!isFiltering && collectionFilter == CollectionFilter.ALL)) {
+                        totalHeight += 12; // Tab subheader
+                        if (isFiltering || expandedCollectionCrateTabs.contains(tab.label())) {
+                            totalHeight += (matchingCratesInTab * 12);
+                            totalHeight += (tabMatchingItemCount * 10);
+                        }
+                    }
                 }
+            }
 
-                boolean isExpanded = isFiltering || (crate.id() == expandedCollectionCrateId);
-                totalHeight += 12;
-                if (isExpanded) {
-                    totalHeight += (crateMatching.size() * 10);
+            // 2. Misc Section Height
+            totalHeight += 12; // "MISC COLLECTIONS" header
+            if (isFiltering || isMiscSectionExpanded) {
+                for (MiscTab tab : MiscTab.values()) {
+                    List<MiscGroupEntry> tabGroups = DatabaseManager.MISC_GROUPS.values().stream()
+                            .filter(g -> {
+                                if (tab == MiscTab.UNSORTED) {
+                                    return g.groupType() == null || g.groupType().isBlank() || g.groupType().equalsIgnoreCase("Unsorted") || g.groupType().equalsIgnoreCase("None");
+                                }
+                                return g.groupType().equalsIgnoreCase(tab.label());
+                            })
+                            .toList();
+
+                    int matchingGroupsInTab = 0;
+                    int tabMatchingItemCount = 0;
+                    for (MiscGroupEntry group : tabGroups) {
+                        List<ItemEntry> groupMatching = group.items().stream().filter(it -> {
+                            boolean owned = CollectionManager.isOwned(it);
+                            boolean wish = CollectionManager.isWishlisted(it);
+                            if (collectionFilter == CollectionFilter.OWNED && !owned) return false;
+                            if (collectionFilter == CollectionFilter.MISSING && owned) return false;
+                            if (collectionFilter == CollectionFilter.WISHLIST && !wish) return false;
+                            return !isFiltering || it.itemName().toLowerCase().contains(filterQuery) || it.id().contains(filterQuery);
+                        }).toList();
+
+                        if (!groupMatching.isEmpty() || (!isFiltering && collectionFilter == CollectionFilter.ALL)) {
+                            matchingGroupsInTab++;
+                            if (isFiltering || group.id() == expandedMiscGroupId) {
+                                tabMatchingItemCount += groupMatching.size();
+                            }
+                        }
+                    }
+
+                    if (matchingGroupsInTab > 0 || (!isFiltering && collectionFilter == CollectionFilter.ALL)) {
+                        totalHeight += 12; // Tab subheader
+                        if (isFiltering || expandedCollectionMiscTabs.contains(tab.label())) {
+                            totalHeight += (matchingGroupsInTab * 12);
+                            totalHeight += (tabMatchingItemCount * 10);
+                        }
+                    }
                 }
             }
 
             drawerMaxScroll = Math.max(0, totalHeight - collViewHeight);
+            currentY = collViewTop - drawerScrollOffset;
+
             graphics.enableScissor(drawerX + 4, collViewTop, drawerX + drawerWidth - 4, viewBottom);
 
-            for (CrateEntry crate : allCrates) {
-                int crateOwned = 0;
-                for (ItemEntry it : crate.items()) {
-                    if (CollectionManager.isOwned(it.id())) crateOwned++;
-                }
+            // --- Pass 2: Render Hierarchical Tree ---
 
-                List<ItemEntry> crateMatching = crate.items().stream()
-                        .filter(it -> {
-                            boolean owned = CollectionManager.isOwned(it.id());
+            // ==========================================
+            // 1. ROOT HEADER: CRATE COLLECTIONS
+            // ==========================================
+            boolean crateSecOpen = isFiltering || isCrateSectionExpanded;
+            String crateSecArrow = crateSecOpen ? "§6▼ " : "§8▶ ";
+            if (currentY + 10 >= collViewTop && currentY <= viewBottom) {
+                graphics.fill(drawerX + 4, currentY - 1, drawerX + drawerWidth - 4, currentY + 11, 0x44692A82);
+                graphics.text(this.font, Component.literal(crateSecArrow + "§e§lCRATE COLLECTIONS"), drawerX + 6, currentY, 0xFFFFFFFF);
+            }
+            drawerClickables.add(new ClickableRow(drawerX + 4, currentY, drawerWidth - 8, 12, () -> {
+                if (!isFiltering) isCrateSectionExpanded = !isCrateSectionExpanded;
+            }));
+            currentY += 12;
+
+            if (crateSecOpen) {
+                for (CrateTab tab : CrateTab.values()) {
+                    List<CrateEntry> tabCrates = DatabaseManager.CRATES.values().stream()
+                            .filter(c -> c.crateType().equalsIgnoreCase(tab.label()))
+                            .toList();
+
+                    // Pre-filter crates to check matches
+                    List<CrateEntry> activeTabCrates = new ArrayList<>();
+                    for (CrateEntry c : tabCrates) {
+                        boolean hasMatches = c.items().stream().anyMatch(it -> {
+                            boolean owned = CollectionManager.isOwned(it);
+                            boolean wish = CollectionManager.isWishlisted(it);
                             if (collectionFilter == CollectionFilter.OWNED && !owned) return false;
                             if (collectionFilter == CollectionFilter.MISSING && owned) return false;
+                            if (collectionFilter == CollectionFilter.WISHLIST && !wish) return false;
                             return !isFiltering || it.itemName().toLowerCase().contains(filterQuery) || it.id().contains(filterQuery);
-                        })
-                        .toList();
-
-                if (crateMatching.isEmpty() && (isFiltering || collectionFilter != CollectionFilter.ALL)) {
-                    continue;
-                }
-
-                boolean isExpanded = isFiltering || (crate.id() == expandedCollectionCrateId);
-                String arrow = isExpanded ? "§d▼ " : "§8▶ ";
-                String compColor = (crateOwned == crate.items().size() && !crate.items().isEmpty()) ? "§a" : "§e";
-                String crateHeader = arrow + "§f" + crate.name() + " " + compColor + "(" + crateOwned + "/" + crate.items().size() + ")";
-
-                if (this.font.width(crateHeader) > drawerWidth - 20) {
-                    while (crateHeader.length() > 5 && this.font.width(crateHeader + "...") > drawerWidth - 20) {
-                        crateHeader = crateHeader.substring(0, crateHeader.length() - 1);
-                    }
-                    crateHeader += "...";
-                }
-
-                if (currentY + 10 >= collViewTop && currentY <= viewBottom) {
-                    graphics.text(this.font, Component.literal(crateHeader), drawerX + 6, currentY, 0xFFFFFFFF);
-                }
-
-                drawerClickables.add(new ClickableRow(drawerX + 4, currentY, drawerWidth - 8, 12, () -> {
-                    if (!isFiltering) {
-                        expandedCollectionCrateId = (expandedCollectionCrateId == crate.id()) ? -1 : crate.id();
-                    }
-                }));
-                currentY += 12;
-
-                if (isExpanded) {
-                    for (ItemEntry item : crateMatching) {
-                        if (currentY + 10 >= collViewTop && currentY <= viewBottom) {
-                            boolean isCurrent = !this.items.isEmpty()
-                                    && this.currentIndex < this.items.size()
-                                    && this.items.get(this.currentIndex).id().equals(item.id());
-
-                            boolean isHovered = localMouseX >= drawerX + 4 && localMouseX <= drawerX + drawerWidth - 4
-                                    && localMouseY >= currentY - 1 && localMouseY < currentY + 10;
-
-                            if (isCurrent) {
-                                graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x55BA68C8);
-                            } else if (isHovered) {
-                                graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
-                            }
-
-                            boolean owned = CollectionManager.isOwned(item.id());
-                            String statusIcon = owned ? "§a✔ " : "§8• ";
-                            String prefix = isCurrent ? "  §e▶ " : "  " + statusIcon;
-                            String textFormat = isCurrent ? "§f§l" : getRarityColor(item.rarityHuman());
-                            String cleanName = item.itemName().replaceAll("(?i)§[0-9a-fk-or]", "").trim();
-
-                            int availableTextWidth = drawerWidth - 24;
-                            if (this.font.width(prefix + textFormat + cleanName) > availableTextWidth) {
-                                while (cleanName.length() > 3 && this.font.width(prefix + textFormat + cleanName + "..") > availableTextWidth) {
-                                    cleanName = cleanName.substring(0, cleanName.length() - 1);
-                                }
-                                cleanName += "..";
-                            }
-
-                            graphics.text(this.font, Component.literal(prefix + textFormat + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
+                        });
+                        if (hasMatches || (!isFiltering && collectionFilter == CollectionFilter.ALL)) {
+                            activeTabCrates.add(c);
                         }
+                    }
 
-                        drawerClickables.add(new ClickableRow(drawerX + 8, currentY, drawerWidth - 12, 10, () -> {
-                            for (int idx = 0; idx < items.size(); idx++) {
-                                if (items.get(idx).id().equals(item.id())) {
-                                    this.currentIndex = idx;
-                                    this.scrollOffset = 0;
-                                    break;
+                    if (activeTabCrates.isEmpty() && (isFiltering || collectionFilter != CollectionFilter.ALL)) {
+                        continue;
+                    }
+
+                    boolean tabOpen = isFiltering || expandedCollectionCrateTabs.contains(tab.label());
+                    String tabArrow = tabOpen ? "§d▼ " : "§8▶ ";
+                    if (currentY + 10 >= collViewTop && currentY <= viewBottom) {
+                        graphics.text(this.font, Component.literal("  " + tabArrow + "§b" + tab.label() + " Crates §8(" + activeTabCrates.size() + ")"), drawerX + 6, currentY, 0xFFFFFFFF);
+                    }
+                    drawerClickables.add(new ClickableRow(drawerX + 4, currentY, drawerWidth - 8, 12, () -> {
+                        if (!isFiltering) {
+                            if (expandedCollectionCrateTabs.contains(tab.label())) {
+                                expandedCollectionCrateTabs.remove(tab.label());
+                            } else {
+                                expandedCollectionCrateTabs.add(tab.label());
+                            }
+                        }
+                    }));
+                    currentY += 12;
+
+                    if (tabOpen) {
+                        for (CrateEntry crate : activeTabCrates) {
+                            int crateCount = 0;
+                            for (ItemEntry it : crate.items()) {
+                                if (collectionFilter == CollectionFilter.WISHLIST) {
+                                    if (CollectionManager.isWishlisted(it)) crateCount++;
+                                } else if (collectionFilter == CollectionFilter.MISSING) {
+                                    if (!CollectionManager.isOwned(it)) crateCount++;
+                                } else {
+                                    if (CollectionManager.isOwned(it)) crateCount++;
                                 }
                             }
-                        }));
-                        currentY += 10;
+
+                            List<ItemEntry> crateMatching = crate.items().stream().filter(it -> {
+                                boolean owned = CollectionManager.isOwned(it);
+                                boolean wish = CollectionManager.isWishlisted(it);
+                                if (collectionFilter == CollectionFilter.OWNED && !owned) return false;
+                                if (collectionFilter == CollectionFilter.MISSING && owned) return false;
+                                if (collectionFilter == CollectionFilter.WISHLIST && !wish) return false;
+                                return !isFiltering || it.itemName().toLowerCase().contains(filterQuery) || it.id().contains(filterQuery);
+                            }).toList();
+
+                            boolean crateOpen = isFiltering || (crate.id() == expandedCollectionCrateId);
+                            String compColor = (crateCount == crate.items().size() && !crate.items().isEmpty()) ? "§a" : "§e";
+                            Component countComp = Component.literal(" " + compColor + "(" + crateCount + "/" + crate.items().size() + ")");
+
+                            // getFormattedHeader(crateOpen) already includes the single ▼ / ▶ arrow
+                            Component baseCrateHeader = crate.getFormattedHeader(crateOpen);
+                            int maxHeaderWidth = drawerWidth - 24 - this.font.width("  ") - this.font.width(countComp);
+
+                            MutableComponent crateHeaderComp = Component.literal("  ");
+                            if (this.font.width(baseCrateHeader) > maxHeaderWidth) {
+                                crateHeaderComp.append(truncateComponent(baseCrateHeader, maxHeaderWidth));
+                            } else {
+                                crateHeaderComp.append(baseCrateHeader);
+                            }
+                            crateHeaderComp.append(countComp);
+
+                            if (currentY + 10 >= collViewTop && currentY <= viewBottom) {
+                                graphics.text(this.font, crateHeaderComp, drawerX + 6, currentY, 0xFFFFFFFF);
+                            }
+
+                            drawerClickables.add(new ClickableRow(drawerX + 4, currentY, drawerWidth - 8, 12, () -> {
+                                if (!isFiltering) {
+                                    expandedCollectionCrateId = (expandedCollectionCrateId == crate.id()) ? -1 : crate.id();
+                                }
+                            }));
+                            currentY += 12;
+
+                            if (crateOpen) {
+                                for (ItemEntry item : crateMatching) {
+                                    if (currentY + 10 >= collViewTop && currentY <= viewBottom) {
+                                        boolean isCurrent = !this.items.isEmpty()
+                                                && this.currentIndex < this.items.size()
+                                                && this.items.get(this.currentIndex) == item;
+
+                                        boolean isHovered = localMouseX >= drawerX + 4 && localMouseX <= drawerX + drawerWidth - 4
+                                                && localMouseY >= currentY - 1 && localMouseY < currentY + 10;
+
+                                        if (isCurrent) {
+                                            graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x55BA68C8);
+                                        } else if (isHovered) {
+                                            graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
+                                        }
+
+                                        boolean owned = CollectionManager.isOwned(item);
+                                        boolean wish = CollectionManager.isWishlisted(item);
+                                        String statusIcon = (collectionFilter == CollectionFilter.WISHLIST)
+                                                ? (wish ? "§6★ " : "§8• ")
+                                                : (owned ? "§a✔ " : "§8• ");
+
+                                        String prefix = isCurrent ? "      §e▶ " : "      " + statusIcon;
+                                        String textFormat = isCurrent ? "§f§l" : getRarityColor(item.rarityHuman());
+                                        String cleanName = item.itemName().replaceAll("(?i)§[0-9a-fk-or]", "").trim();
+
+                                        int availableTextWidth = drawerWidth - 28;
+                                        if (this.font.width(prefix + textFormat + cleanName) > availableTextWidth) {
+                                            while (cleanName.length() > 3 && this.font.width(prefix + textFormat + cleanName + "..") > availableTextWidth) {
+                                                cleanName = cleanName.substring(0, cleanName.length() - 1);
+                                            }
+                                            cleanName += "..";
+                                        }
+
+                                        graphics.text(this.font, Component.literal(prefix + textFormat + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
+                                    }
+
+                                    drawerClickables.add(new ClickableRow(drawerX + 8, currentY, drawerWidth - 12, 10, () -> {
+                                        int foundIdx = -1;
+                                        for (int idx = 0; idx < items.size(); idx++) {
+                                            if (items.get(idx) == item) {
+                                                foundIdx = idx;
+                                                break;
+                                            }
+                                        }
+
+                                        if (foundIdx != -1) {
+                                            this.currentIndex = foundIdx;
+                                        } else {
+                                            this.items.add(item);
+                                            this.currentIndex = this.items.size() - 1;
+                                        }
+                                        this.scrollOffset = 0;
+                                    }));
+                                    currentY += 10;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ==========================================
+            // 2. ROOT HEADER: MISC COLLECTIONS
+            // ==========================================
+            boolean miscSecOpen = isFiltering || isMiscSectionExpanded;
+            String miscSecArrow = miscSecOpen ? "§6▼ " : "§8▶ ";
+            if (currentY + 10 >= collViewTop && currentY <= viewBottom) {
+                graphics.fill(drawerX + 4, currentY - 1, drawerX + drawerWidth - 4, currentY + 11, 0x44692A82);
+                graphics.text(this.font, Component.literal(miscSecArrow + "§e§lMISC COLLECTIONS"), drawerX + 6, currentY, 0xFFFFFFFF);
+            }
+            drawerClickables.add(new ClickableRow(drawerX + 4, currentY, drawerWidth - 8, 12, () -> {
+                if (!isFiltering) isMiscSectionExpanded = !isMiscSectionExpanded;
+            }));
+            currentY += 12;
+
+            if (miscSecOpen) {
+                for (MiscTab tab : MiscTab.values()) {
+                    List<MiscGroupEntry> tabGroups = DatabaseManager.MISC_GROUPS.values().stream()
+                            .filter(g -> {
+                                if (tab == MiscTab.UNSORTED) {
+                                    return g.groupType() == null || g.groupType().isBlank() || g.groupType().equalsIgnoreCase("Unsorted") || g.groupType().equalsIgnoreCase("None");
+                                }
+                                return g.groupType().equalsIgnoreCase(tab.label());
+                            })
+                            .toList();
+
+                    List<MiscGroupEntry> activeTabGroups = new ArrayList<>();
+                    for (MiscGroupEntry g : tabGroups) {
+                        boolean hasMatches = g.items().stream().anyMatch(it -> {
+                            boolean owned = CollectionManager.isOwned(it);
+                            boolean wish = CollectionManager.isWishlisted(it);
+                            if (collectionFilter == CollectionFilter.OWNED && !owned) return false;
+                            if (collectionFilter == CollectionFilter.MISSING && owned) return false;
+                            if (collectionFilter == CollectionFilter.WISHLIST && !wish) return false;
+                            return !isFiltering || it.itemName().toLowerCase().contains(filterQuery) || it.id().contains(filterQuery);
+                        });
+                        if (hasMatches || (!isFiltering && collectionFilter == CollectionFilter.ALL)) {
+                            activeTabGroups.add(g);
+                        }
+                    }
+
+                    if (activeTabGroups.isEmpty() && (isFiltering || collectionFilter != CollectionFilter.ALL)) {
+                        continue;
+                    }
+
+                    boolean tabOpen = isFiltering || expandedCollectionMiscTabs.contains(tab.label());
+                    String tabArrow = tabOpen ? "§d▼ " : "§8▶ ";
+                    if (currentY + 10 >= collViewTop && currentY <= viewBottom) {
+                        graphics.text(this.font, Component.literal("  " + tabArrow + "§b" + tab.label() + " Groups §8(" + activeTabGroups.size() + ")"), drawerX + 6, currentY, 0xFFFFFFFF);
+                    }
+                    drawerClickables.add(new ClickableRow(drawerX + 4, currentY, drawerWidth - 8, 12, () -> {
+                        if (!isFiltering) {
+                            if (expandedCollectionMiscTabs.contains(tab.label())) {
+                                expandedCollectionMiscTabs.remove(tab.label());
+                            } else {
+                                expandedCollectionMiscTabs.add(tab.label());
+                            }
+                        }
+                    }));
+                    currentY += 12;
+
+                    if (tabOpen) {
+                        for (MiscGroupEntry group : activeTabGroups) {
+                            int groupCount = 0;
+                            for (ItemEntry it : group.items()) {
+                                if (collectionFilter == CollectionFilter.WISHLIST) {
+                                    if (CollectionManager.isWishlisted(it)) groupCount++;
+                                } else if (collectionFilter == CollectionFilter.MISSING) {
+                                    if (!CollectionManager.isOwned(it)) groupCount++;
+                                } else {
+                                    if (CollectionManager.isOwned(it)) groupCount++;
+                                }
+                            }
+
+                            List<ItemEntry> groupMatching = group.items().stream().filter(it -> {
+                                boolean owned = CollectionManager.isOwned(it);
+                                boolean wish = CollectionManager.isWishlisted(it);
+                                if (collectionFilter == CollectionFilter.OWNED && !owned) return false;
+                                if (collectionFilter == CollectionFilter.MISSING && owned) return false;
+                                if (collectionFilter == CollectionFilter.WISHLIST && !wish) return false;
+                                return !isFiltering || it.itemName().toLowerCase().contains(filterQuery) || it.id().contains(filterQuery);
+                            }).toList();
+
+                            boolean groupOpen = isFiltering || (group.id() == expandedMiscGroupId);
+                            String arrow = groupOpen ? "§d▼ " : "§8▶ ";
+                            String compColor = (groupCount == group.items().size() && !group.items().isEmpty()) ? "§a" : "§e";
+                            Component countComp = Component.literal(" " + compColor + "(" + groupCount + "/" + group.items().size() + ")");
+
+                            Component baseGroupHeader = group.getFormattedHeader();
+                            int maxHeaderWidth = drawerWidth - 24 - this.font.width("    " + arrow) - this.font.width(countComp);
+
+                            MutableComponent groupHeaderComp = Component.literal("    " + arrow);
+                            if (this.font.width(baseGroupHeader) > maxHeaderWidth) {
+                                groupHeaderComp.append(truncateComponent(baseGroupHeader, maxHeaderWidth));
+                            } else {
+                                groupHeaderComp.append(baseGroupHeader);
+                            }
+                            groupHeaderComp.append(countComp);
+
+                            if (currentY + 10 >= collViewTop && currentY <= viewBottom) {
+                                graphics.text(this.font, groupHeaderComp, drawerX + 6, currentY, 0xFFFFFFFF);
+                            }
+
+                            drawerClickables.add(new ClickableRow(drawerX + 4, currentY, drawerWidth - 8, 12, () -> {
+                                if (!isFiltering) {
+                                    expandedMiscGroupId = (expandedMiscGroupId == group.id()) ? -1 : group.id();
+                                }
+                            }));
+                            currentY += 12;
+
+                            if (groupOpen) {
+                                for (ItemEntry item : groupMatching) {
+                                    if (currentY + 10 >= collViewTop && currentY <= viewBottom) {
+                                        boolean isCurrent = !this.items.isEmpty()
+                                                && this.currentIndex < this.items.size()
+                                                && this.items.get(this.currentIndex) == item;
+
+                                        boolean isHovered = localMouseX >= drawerX + 4 && localMouseX <= drawerX + drawerWidth - 4
+                                                && localMouseY >= currentY - 1 && localMouseY < currentY + 10;
+
+                                        if (isCurrent) {
+                                            graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x55BA68C8);
+                                        } else if (isHovered) {
+                                            graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
+                                        }
+
+                                        boolean owned = CollectionManager.isOwned(item);
+                                        boolean wish = CollectionManager.isWishlisted(item);
+                                        String statusIcon = (collectionFilter == CollectionFilter.WISHLIST)
+                                                ? (wish ? "§6★ " : "§8• ")
+                                                : (owned ? "§a✔ " : "§8• ");
+
+                                        String prefix = isCurrent ? "      §e▶ " : "      " + statusIcon;
+                                        String textFormat = isCurrent ? "§f§l" : getRarityColor(item.rarityHuman());
+                                        String cleanName = item.itemName().replaceAll("(?i)§[0-9a-fk-or]", "").trim();
+
+                                        int availableTextWidth = drawerWidth - 28;
+                                        if (this.font.width(prefix + textFormat + cleanName) > availableTextWidth) {
+                                            while (cleanName.length() > 3 && this.font.width(prefix + textFormat + cleanName + "..") > availableTextWidth) {
+                                                cleanName = cleanName.substring(0, cleanName.length() - 1);
+                                            }
+                                            cleanName += "..";
+                                        }
+
+                                        graphics.text(this.font, Component.literal(prefix + textFormat + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
+                                    }
+
+                                    drawerClickables.add(new ClickableRow(drawerX + 8, currentY, drawerWidth - 12, 10, () -> {
+                                        int foundIdx = -1;
+                                        for (int idx = 0; idx < items.size(); idx++) {
+                                            if (items.get(idx) == item) {
+                                                foundIdx = idx;
+                                                break;
+                                            }
+                                        }
+
+                                        if (foundIdx != -1) {
+                                            this.currentIndex = foundIdx;
+                                        } else {
+                                            this.items.add(item);
+                                            this.currentIndex = this.items.size() - 1;
+                                        }
+                                        this.scrollOffset = 0;
+                                    }));
+                                    currentY += 10;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1469,4 +1915,18 @@ public class ItemDatabaseScreen extends Screen {
 
         return truncated.append(Component.literal(".."));
     }
+
+    private String resolveGroupName(ItemEntry item) {
+        if (item == null || item.groupId() == null) return null;
+        try {
+            int gId = Integer.parseInt(item.groupId().trim());
+            MiscGroupEntry group = DatabaseManager.MISC_GROUPS.get(gId);
+            if (group != null) {
+                return group.name();
+            }
+        } catch (NumberFormatException ignored) {}
+        return null;
+    }
+
+
 }

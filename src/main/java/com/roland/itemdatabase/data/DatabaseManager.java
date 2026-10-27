@@ -475,4 +475,45 @@ public class DatabaseManager {
         }
         ItemDatabase.LOGGER.info("[ItemDatabase] Mapped {} misc items across {} misc groups", mapped, MISC_GROUPS.size());
     }
+
+    /**
+     * Collects all cached items across crates and miscellaneous categories.
+     */
+    public static List<ItemEntry> getAllItems() {
+        List<ItemEntry> all = new ArrayList<>(CRATE_ITEMS.values());
+        all.addAll(MISC_ITEMS.values());
+        return all;
+    }
+
+    /**
+     * Finds an item by matching its clean name or ID (case-insensitive).
+     */
+    public static ItemEntry findItemByName(String query) {
+        if (query == null || query.isBlank()) return null;
+        String lower = query.trim().toLowerCase();
+
+        List<ItemEntry> all = getAllItems();
+
+        // 1. Direct ID match
+        for (ItemEntry item : all) {
+            if (item.id().equalsIgnoreCase(lower)) return item;
+        }
+
+        // 2. Exact clean name match
+        for (ItemEntry item : all) {
+            if (item.getCleanName().equalsIgnoreCase(lower)) return item;
+        }
+
+        // 3. Name starts with query
+        for (ItemEntry item : all) {
+            if (item.getCleanName().toLowerCase().startsWith(lower)) return item;
+        }
+
+        // 4. Name contains query
+        for (ItemEntry item : all) {
+            if (item.getCleanName().toLowerCase().contains(lower)) return item;
+        }
+
+        return null;
+    }
 }
