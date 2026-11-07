@@ -21,6 +21,7 @@ import java.util.regex.Pattern;
  * @param iconUrl       Resolved web URL for fetching item artwork.
  * @param isCrateItem   True if linked to a crate; false if miscellaneous.
  * @param tags          Assigned category and search tags.
+ * @param itemOrder     Display sort position within its parent container/group.
  */
 public record ItemEntry(
         String id,
@@ -35,7 +36,8 @@ public record ItemEntry(
         String crateId,
         String iconUrl,
         boolean isCrateItem,
-        List<String> tags
+        List<String> tags,
+        int itemOrder
 ) {
     private static final Pattern COOLDOWN_PATTERN = Pattern.compile(
             "(?i)cooldown\\s*[:=-]?\\s*([0-9]+\\s*(?:minutes?|mins?|seconds?|secs?|hours?|hrs?|m|s|h))"
@@ -120,7 +122,44 @@ public record ItemEntry(
     }
 
     /**
-     * Factory helper to construct an ItemEntry with safe defaults.
+     * Factory helper to construct an ItemEntry with safe defaults including order.
+     */
+    public static ItemEntry of(
+            String id,
+            String itemName,
+            String itemHuman,
+            String rawData,
+            String imageType,
+            String winPercentage,
+            String rarityHuman,
+            String notes,
+            String groupId,
+            String crateId,
+            String iconUrl,
+            boolean isCrateItem,
+            List<String> tags,
+            int itemOrder
+    ) {
+        return new ItemEntry(
+                id,
+                itemName,
+                itemHuman,
+                rawData,
+                imageType,
+                winPercentage,
+                rarityHuman,
+                notes,
+                groupId,
+                crateId,
+                iconUrl,
+                isCrateItem,
+                tags,
+                itemOrder
+        );
+    }
+
+    /**
+     * Overloaded factory helper preserving backwards compatibility for calls without itemOrder.
      */
     public static ItemEntry of(
             String id,
@@ -150,7 +189,8 @@ public record ItemEntry(
                 crateId,
                 iconUrl,
                 isCrateItem,
-                tags
+                tags,
+                0
         );
     }
 
@@ -163,5 +203,15 @@ public record ItemEntry(
                 .replaceAll("(?i)§[0-9a-fk-or]", "")
                 .replaceAll("[✦★♦❀•▶◀►◄]", "")
                 .trim();
+    }
+
+    /**
+     * @return Formatted Component with embedded section codes and amp codes parsed.
+     */
+    public net.minecraft.network.chat.Component getStyledComponent() {
+        if (this.itemName == null || this.itemName.isBlank()) {
+            return net.minecraft.network.chat.Component.literal("Unknown");
+        }
+        return net.minecraft.network.chat.Component.literal(this.itemName.replace('&', '§'));
     }
 }

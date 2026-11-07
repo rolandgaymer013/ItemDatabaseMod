@@ -112,6 +112,88 @@ public class RawDataParser {
     }
 
     /**
+     * Parses enchantments from modern component data or legacy NBT tags into formatted Component lines.
+     * Displays in native Minecraft gray (e.g., "Protection 5", "Aqua Affinity").
+     *
+     * @param rawDataJson Serialized JSON/NBT string from the backend.
+     * @return Ordered list of formatted enchantment Components.
+     */
+    public static List<Component> parseEnchantments(String rawDataJson) {
+        List<Component> enchants = new ArrayList<>();
+        if (rawDataJson == null || rawDataJson.isBlank()) {
+            return enchants;
+        }
+
+        try {
+            JsonElement parsed = JsonParser.parseString(rawDataJson);
+            if (!parsed.isJsonObject()) return enchants;
+
+            JsonObject root = parsed.getAsJsonObject();
+
+            // 1. Modern Minecraft 1.20.5+ Components
+            if (root.has("components") && root.get("components").isJsonObject()) {
+                JsonObject components = root.getAsJsonObject("components");
+                for (String key : new String[]{"minecraft:enchantments", "minecraft:stored_enchantments"}) {
+                    if (components.has(key) && components.get(key).isJsonObject()) {
+                        JsonObject levels = components.getAsJsonObject(key);
+                        if (levels.has("levels") && levels.get("levels").isJsonObject()) {
+                            levels = levels.getAsJsonObject("levels");
+                        }
+                        for (String enchId : levels.keySet()) {
+                            int lvl = 1;
+                            try {
+                                lvl = levels.get(enchId).getAsInt();
+                            } catch (Exception ignored) {}
+                            enchants.add(formatEnchantment(enchId, lvl));
+                        }
+                    }
+                }
+            }
+
+            // 2. Legacy NBT tags (tag.Enchantments or tag.StoredEnchantments)
+            if (enchants.isEmpty() && root.has("tag") && root.get("tag").isJsonObject()) {
+                JsonObject tag = root.getAsJsonObject("tag");
+                for (String key : new String[]{"Enchantments", "StoredEnchantments"}) {
+                    if (tag.has(key) && tag.get(key).isJsonArray()) {
+                        for (JsonElement elem : tag.getAsJsonArray(key)) {
+                            if (elem.isJsonObject()) {
+                                JsonObject enchObj = elem.getAsJsonObject();
+                                String id = enchObj.has("id") ? enchObj.get("id").getAsString() : "";
+                                int lvl = enchObj.has("lvl") ? enchObj.get("lvl").getAsInt() : 1;
+                                if (!id.isEmpty()) {
+                                    enchants.add(formatEnchantment(id, lvl));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        return enchants;
+    }
+
+    private static Component formatEnchantment(String rawId, int level) {
+        String clean = rawId.replace("minecraft:", "").replace("_", " ").toLowerCase();
+        String[] words = clean.split(" ");
+        StringBuilder name = new StringBuilder();
+        for (String w : words) {
+            if (!w.isEmpty()) {
+                name.append(Character.toUpperCase(w.charAt(0))).append(w.substring(1)).append(" ");
+            }
+        }
+        String formattedName = name.toString().trim();
+
+        // Single-tier enchants like Aqua Affinity or Silk Touch don't display levels
+        if (clean.equals("aqua affinity") || clean.equals("silk touch") || clean.equals("mending")
+                || clean.equals("infinity") || clean.equals("curse of binding") || clean.equals("curse of vanishing")) {
+            return Component.literal("§7" + formattedName);
+        }
+
+        return Component.literal("§7" + formattedName + " " + level);
+    }
+
+    /**
      * Recursively converts a JSON element into a {@link MutableComponent}.
      * Handles raw primitives, formatting codes, embedded/stringified JSON, and sibling arrays.
      *

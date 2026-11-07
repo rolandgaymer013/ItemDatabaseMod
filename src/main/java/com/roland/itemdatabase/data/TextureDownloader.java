@@ -31,19 +31,27 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Handles asynchronous downloading, disk caching, GIF frame parsing, and dynamic
- * OpenGL texture registration on the Minecraft client render thread.
+ * Handles asynchronous texture downloading, disk caching, multi-frame GIF decomposition,
+ * and dynamic OpenGL texture registration on the Minecraft client render thread.
  */
 public class TextureDownloader {
+
+    /** Shared HTTP client configured with redirect following and timeout constraints. */
     private static final HttpClient CLIENT = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.ALWAYS)
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
+    /** Cache of loaded and registered animated textures keyed by identifier. */
     private static final Map<String, AnimatedTexture> ANIMATED_CACHE = new ConcurrentHashMap<>();
+
+    /** In-flight download requests tracked to prevent duplicate network fetches. */
     private static final Set<String> PENDING_DOWNLOADS = Collections.synchronizedSet(new HashSet<>());
 
-    // Store cached textures under .cache/itemdatabase inside the game directory
+    /** Cache keys that failed to download or returned 404/non-200. */
+    private static final Set<String> FAILED_DOWNLOADS = Collections.synchronizedSet(new HashSet<>());
+
+    /** Persistent disk cache directory under .minecraft/.cache/itemdatabase. */
     private static final Path CACHE_DIR = FabricLoader.getInstance()
             .getGameDir()
             .resolve(".cache")
@@ -63,7 +71,7 @@ public class TextureDownloader {
      * Retrieves cached animation metadata and frame timing for a texture key.
      *
      * @param cacheKey Unique texture identifier.
-     * @return AnimatedTexture record, or null if not yet loaded.
+     * @return AnimatedTexture record, or null if not yet loaded into memory.
      */
     public static AnimatedTexture getTextureInfo(String cacheKey) {
         return (cacheKey != null) ? ANIMATED_CACHE.get(cacheKey) : null;
@@ -94,6 +102,9 @@ public class TextureDownloader {
         return null;
     }
 
+    /**
+     * Loads a texture from local disk cache or initiates an asynchronous network request.
+     */
     private static void loadOrDownloadAsync(String url, String cacheKey) {
         CompletableFuture.runAsync(() -> {
             boolean isGif = url.toLowerCase().endsWith(".gif");
@@ -135,11 +146,13 @@ public class TextureDownloader {
                                 decodeAndRegister(body, cacheKey, isGif);
                             } else {
                                 ItemDatabase.LOGGER.warn("[ItemDatabase] Download returned non-200: {} status={}", url, response.statusCode());
+                                FAILED_DOWNLOADS.add(cacheKey);
                                 PENDING_DOWNLOADS.remove(cacheKey);
                             }
                         })
                         .exceptionally(ex -> {
                             ItemDatabase.LOGGER.error("[ItemDatabase] Network exception downloading {}", url, ex);
+                            FAILED_DOWNLOADS.add(cacheKey);
                             PENDING_DOWNLOADS.remove(cacheKey);
                             return null;
                         });
@@ -150,6 +163,10 @@ public class TextureDownloader {
         });
     }
 
+    /**
+     * Decodes raw image bytes into frames (with GIF metadata support) and registers
+     * them with Minecraft's dynamic texture manager on the main render thread.
+     */
     private static void decodeAndRegister(byte[] bytes, String cacheKey, boolean isGif) {
         try {
             List<BufferedImage> frames = new ArrayList<>();
@@ -284,6 +301,9 @@ public class TextureDownloader {
         }
     }
 
+    /**
+     * Clones an existing BufferedImage to prevent subsequent graphics passes from mutating previous frames.
+     */
     private static BufferedImage copyImage(BufferedImage source) {
         BufferedImage copy = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = copy.createGraphics();
@@ -292,8 +312,14 @@ public class TextureDownloader {
         return copy;
     }
 
+    /**
+     * Internal metadata holder for decoded GIF frame characteristics.
+     */
     private record GifFrameMeta(int delayMs, String disposalMethod, int x, int y) {}
 
+    /**
+     * Extracts frame delays, disposal instructions, and screen offsets from ImageIO metadata trees.
+     */
     private static GifFrameMeta getGifFrameMeta(IIOMetadata metadata) {
         int delayMs = 100;
         String disposalMethod = "none";
@@ -335,5 +361,48 @@ public class TextureDownloader {
         } catch (Exception ignored) {}
 
         return new GifFrameMeta(Math.max(20, delayMs), disposalMethod, x, y);
+    }
+
+    /**
+     * Evicts a cached texture from memory and removes its cached file from disk,
+     * forcing a fresh download and decode on the next request.
+     *
+     * @param cacheKey Texture identifier to evict.
+     */
+    public static void evictCache(String cacheKey) {
+        if (cacheKey == null || cacheKey.isBlank()) return;
+
+        // 1. Remove from in-memory cache
+        ANIMATED_CACHE.remove(cacheKey);
+        PENDING_DOWNLOADS.remove(cacheKey);
+        FAILED_DOWNLOADS.remove(cacheKey);
+
+        // 2. Remove cached files on disk (.png and .gif)
+        try {
+            String safeBaseName = cacheKey.toLowerCase().replaceAll("[^a-z0-9_-]", "_");
+            Path pngFile = CACHE_DIR.resolve(safeBaseName + ".png");
+            Path gifFile = CACHE_DIR.resolve(safeBaseName + ".gif");
+
+            Files.deleteIfExists(pngFile);
+            Files.deleteIfExists(gifFile);
+        } catch (Exception e) {
+            ItemDatabase.LOGGER.warn("[ItemDatabase] Failed to evict disk cache for key: {}", cacheKey, e);
+        }
+    }
+
+    /**
+     * Clears all recorded failed download keys, allowing the client to retry
+     * fetching icons that previously returned 404 or non-200 during this session.
+     */
+    public static void clearFailedCache() {
+        FAILED_DOWNLOADS.clear();
+    }
+
+    public static boolean hasFailed(String cacheKey) {
+        return cacheKey != null && FAILED_DOWNLOADS.contains(cacheKey);
+    }
+
+    public static boolean isTextureAvailable(String cacheKey) {
+        return cacheKey != null && ANIMATED_CACHE.containsKey(cacheKey);
     }
 }

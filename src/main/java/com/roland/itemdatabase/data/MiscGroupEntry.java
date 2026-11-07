@@ -11,15 +11,19 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Represents a miscellaneous grouping (vouchers, events, furniture, unsorted)
- * in the BlossomCraft database. Supports dynamic theme matching and gradient titles.
+ * Immutable data record representing a miscellaneous container group (e.g. Vouchers,
+ * Events, Furniture, or Unsorted items) in the BlossomCraft database.
+ * <p>
+ * Handles category classification, persistent group ordering, and dynamic title
+ * styling via theme palette matching and character-by-character color gradients.
  *
- * @param id          Unique group ID.
- * @param name        Display name of the group.
- * @param groupType   Group category (Voucher, Event, Furniture, Unsorted).
- * @param urlTag      Slug identifier for web resources.
- * @param releaseDate Release date timestamp or string.
- * @param items       List of items belonging to this group.
+ * @param id          Unique numeric identifier assigned by the database.
+ * @param name        Display title of the group (e.g., "Music Discs", "Odyssey II Furniture").
+ * @param groupType   Categorical sub-filter ("Voucher", "Event", "Furniture", or "Unsorted").
+ * @param urlTag      Slug identifier used for web URLs and resource lookup.
+ * @param releaseDate Release date timestamp or formatted string.
+ * @param groupOrder  Sequential display order index stored in the database.
+ * @param items       List of miscellaneous child items indexed under this group.
  */
 public record MiscGroupEntry(
         int id,
@@ -27,21 +31,36 @@ public record MiscGroupEntry(
         String groupType,
         String urlTag,
         String releaseDate,
+        int groupOrder,
         List<ItemEntry> items
 ) {
-    public MiscGroupEntry(int id, String name, String groupType, String urlTag, String releaseDate) {
-        this(id, name, groupType, urlTag, releaseDate, new ArrayList<>());
+    /**
+     * Convenience constructor with custom order index and an empty item collection.
+     */
+    public MiscGroupEntry(int id, String name, String groupType, String urlTag, String releaseDate, int groupOrder) {
+        this(id, name, groupType, urlTag, releaseDate, groupOrder, new ArrayList<>());
     }
 
+    /**
+     * Default constructor defaulting groupOrder to 0.
+     */
+    public MiscGroupEntry(int id, String name, String groupType, String urlTag, String releaseDate) {
+        this(id, name, groupType, urlTag, releaseDate, 0, new ArrayList<>());
+    }
+
+    /**
+     * Compact constructor guaranteeing non-null item list initialization.
+     */
     public MiscGroupEntry {
         items = (items != null) ? items : new ArrayList<>();
     }
 
     /**
-     * Resolves the formatted header component for this group, applying
-     * either an authentic theme gradient or a default type color.
+     * Resolves the formatted title component for navigation lists and drawer trees.
+     * Applies an interpolated gradient if a matching palette is discovered, or falls
+     * back to standard categorical color codes.
      *
-     * @return Formatted Component for display in the drawer tree.
+     * @return Formatted Minecraft {@link Component} without navigation arrows.
      */
     public Component getFormattedHeader() {
         List<TextColor> palette = findThemePalette();
@@ -50,71 +69,81 @@ public record MiscGroupEntry(
             return applyGradient(name, palette);
         } else {
             String defaultColor = switch (groupType != null ? groupType.toLowerCase() : "") {
-                case "voucher" -> "§b";
-                case "event" -> "§6";
-                case "furniture" -> "§a";
-                default -> "§d";
+                case "voucher" -> "§b";    // Aqua
+                case "event" -> "§6";      // Gold
+                case "furniture" -> "§a";  // Green
+                default -> "§d";           // Light Purple / Unsorted
             };
             return Component.literal(defaultColor + name);
         }
     }
 
+    /**
+     * Discovers a multi-stop color palette for this group by querying:
+     * <ol>
+     *   <li>Explicit hardcoded theme keywords in the group name.</li>
+     *   <li>Matching crate season banners if the group shares a seasonal title.</li>
+     *   <li>Direct custom name component sampling from constituent items.</li>
+     * </ol>
+     *
+     * @return List of {@link TextColor} stops, or an empty list if no theme matched.
+     */
     private List<TextColor> findThemePalette() {
         List<TextColor> colors = new ArrayList<>();
         String lowerName = name.toLowerCase().replace("–", "-").replace("—", "-").trim();
 
-        // 1. Exact theme presets for known seasons & events (guarantees colors even without item lore)
+        // 1. Explicit theme keyword mappings
         if (lowerName.contains("odyssey ii") || lowerName.contains("odyssey 2") || lowerName.contains("odyssey")) {
             return List.of(
-                    TextColor.fromRgb(0xFFFF55),
-                    TextColor.fromRgb(0xFFAA00),
-                    TextColor.fromRgb(0xFF5555)
+                    TextColor.fromRgb(0xFFFF55), // Yellow
+                    TextColor.fromRgb(0xFFAA00), // Orange
+                    TextColor.fromRgb(0xFF5555)  // Light Red
             );
         }
         if (lowerName.contains("christmas") || lowerName.contains("xmas") || lowerName.contains("winter")) {
             return List.of(
-                    TextColor.fromRgb(0xFF5555),
-                    TextColor.fromRgb(0x55FF55)
+                    TextColor.fromRgb(0xFF5555), // Red
+                    TextColor.fromRgb(0x55FF55)  // Green
             );
         }
         if (lowerName.contains("halloween") || lowerName.contains("spooky")) {
             return List.of(
-                    TextColor.fromRgb(0xFFAA00),
-                    TextColor.fromRgb(0xFFFF55)
+                    TextColor.fromRgb(0xFFAA00), // Orange
+                    TextColor.fromRgb(0xFFFF55)  // Yellow
             );
         }
         if (lowerName.contains("enchanted")) {
             return List.of(
-                    TextColor.fromRgb(0x55FF55),
-                    TextColor.fromRgb(0xAAFFAA)
+                    TextColor.fromRgb(0x55FF55), // Green
+                    TextColor.fromRgb(0xAAFFAA)  // Light Mint
             );
         }
         if (lowerName.contains("fable")) {
             return List.of(
-                    TextColor.fromRgb(0xFFAAFF),
-                    TextColor.fromRgb(0x55FFFF)
+                    TextColor.fromRgb(0xFFAAFF), // Pink
+                    TextColor.fromRgb(0x55FFFF)  // Aqua
             );
         }
         if (lowerName.contains("infinity")) {
             return List.of(
-                    TextColor.fromRgb(0x5555FF),
-                    TextColor.fromRgb(0x55FFFF)
+                    TextColor.fromRgb(0x5555FF), // Blue
+                    TextColor.fromRgb(0x55FFFF)  // Aqua
             );
         }
         if (lowerName.contains("chronopunk")) {
             return List.of(
-                    TextColor.fromRgb(0x55FFFF),
-                    TextColor.fromRgb(0xFFAA00)
+                    TextColor.fromRgb(0x55FFFF), // Aqua
+                    TextColor.fromRgb(0xFFAA00)  // Orange
             );
         }
         if (lowerName.contains("labubu")) {
             return List.of(
-                    TextColor.fromRgb(0xFFAACC),
-                    TextColor.fromRgb(0xFFFF88)
+                    TextColor.fromRgb(0xFFAACC), // Pastel Pink
+                    TextColor.fromRgb(0xFFFF88)  // Pastel Yellow
             );
         }
 
-        // 2. Dynamic lookup: Search global CRATES for matching seasonal lore
+        // 2. Cross-reference matching crate season banners
         for (CrateEntry crate : DatabaseManager.CRATES.values()) {
             String crateName = crate.name().toLowerCase();
             String cleanedCrate = crateName.replaceAll("(?i)season\\s*\\d+:?", "").trim();
@@ -146,7 +175,7 @@ public record MiscGroupEntry(
             }
         }
 
-        // 3. Fallback: Sample colors from items within this group
+        // 3. Dynamic color extraction from member items
         if (!items.isEmpty()) {
             for (ItemEntry it : items) {
                 if (it.rawData() != null && !it.rawData().isBlank()) {
@@ -172,7 +201,11 @@ public record MiscGroupEntry(
     }
 
     /**
-     * Interpolates RGB colors across a string of text character by character.
+     * Interpolates RGB values across a text string character-by-character.
+     *
+     * @param text    The plain string to format.
+     * @param palette The sequence of color stops to blend between.
+     * @return Formatted Component with colored text segments.
      */
     private static Component applyGradient(String text, List<TextColor> palette) {
         if (palette == null || palette.isEmpty()) return Component.literal(text);

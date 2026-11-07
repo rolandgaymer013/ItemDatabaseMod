@@ -26,18 +26,28 @@ import net.minecraft.util.Mth;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * Main GUI viewer for the BlossomCraft Item Database.
- * Features an interactive draggable card, smooth scale zooming, live search drawer,
- * per-character hex gradient rendering, animated GIF textures, and collection tracking.
+ * <p>
+ * Core capabilities:
+ * <ul>
+ *   <li>Interactive floating item card with persistent drag-and-drop panning and Ctrl + Wheel zoom scaling.</li>
+ *   <li>Multi-tiered slide-out navigation tree drawer supporting Crates, Misc items, Tags, and Collection progress.</li>
+ *   <li>Prioritized lore rendering preferring NBT components with automatic formatting and color code parsing.</li>
+ *   <li>Direct inventory collection tracking, including [Space] Owned and [W] Wishlist toggles.</li>
+ *   <li>Animated GIF and dynamic PNG texture rendering with automatic aspect-ratio scaling.</li>
+ * </ul>
  */
 public class ItemDatabaseScreen extends Screen {
 
+    /** Primary view categories supported by the navigation drawer. */
     public enum ViewCategory {
         CRATES,
         MISC,
@@ -45,6 +55,7 @@ public class ItemDatabaseScreen extends Screen {
         COLLECTION
     }
 
+    /** Sub-tabs for the Crates view category. */
     public enum CrateTab {
         SEASONAL("Seasonal"),
         SIDE("Side"),
@@ -55,6 +66,7 @@ public class ItemDatabaseScreen extends Screen {
         public String label() { return label; }
     }
 
+    /** Sub-tabs for the Miscellaneous items view category. */
     public enum MiscTab {
         UNSORTED("Unsorted"),
         VOUCHER("Voucher"),
@@ -66,6 +78,7 @@ public class ItemDatabaseScreen extends Screen {
         public String label() { return label; }
     }
 
+    /** Filter tiers for user Collection progress. */
     public enum CollectionFilter {
         ALL("All"),
         OWNED("Owned"),
@@ -81,7 +94,6 @@ public class ItemDatabaseScreen extends Screen {
     private static final Pattern NBT_ID_PATTERN = Pattern.compile("\"id\"\\s*:\\s*\"(?:minecraft:)?([a-z0-9_]+)\"");
     private static final Pattern NBT_ALT_ID_PATTERN = Pattern.compile("id:\\s*\"?(?:minecraft:)?([a-z0-9_]+)\"?");
     private static final Pattern CLEAN_REGEX_PATTERN = Pattern.compile("(?i)§[0-9a-fk-or]");
-    private static final Pattern TOKEN_SPLIT_PATTERN = Pattern.compile("[\n\r]+|\\s*[\u2550\u2500\u25C6\u25C7\u2726\u2727\u2022\u25A0\u2748\u273F\u22EE\u25BA\u25C4]+\\s*");
 
     // Primary navigation & item state
     private ViewCategory currentCategory = ViewCategory.CRATES;
@@ -99,12 +111,12 @@ public class ItemDatabaseScreen extends Screen {
     private double dragGrabX = 0;
     private double dragGrabY = 0;
 
-    // Scrolling state
+    // Lore scrolling state
     private int scrollOffset = 0;
     private int maxScroll = 0;
 
     // Base card dimensions
-    private final int panelWidth = 330;
+    private final int panelWidth = 380;
     private final int panelHeight = 220;
 
     private EditBox searchBox;
@@ -115,11 +127,11 @@ public class ItemDatabaseScreen extends Screen {
     private int drawerScrollOffset = 0;
     private int drawerMaxScroll = 0;
 
-    // Expanded folder tracking for Collection Mode (Approach B) - all closed by default
+    // Expanded folder tracking for Collection Mode - closed by default
     private boolean isCrateSectionExpanded = false;
     private boolean isMiscSectionExpanded = false;
-    private final java.util.Set<String> expandedCollectionCrateTabs = new java.util.HashSet<>();
-    private final java.util.Set<String> expandedCollectionMiscTabs = new java.util.HashSet<>();
+    private final Set<String> expandedCollectionCrateTabs = new HashSet<>();
+    private final Set<String> expandedCollectionMiscTabs = new HashSet<>();
 
     // Sub-tab category selections
     private CrateTab selectedTab = CrateTab.SEASONAL;
@@ -135,6 +147,11 @@ public class ItemDatabaseScreen extends Screen {
     private record ClickableRow(int x, int y, int width, int height, Runnable action) {}
     private final List<ClickableRow> drawerClickables = new ArrayList<>();
 
+    /**
+     * Constructs the Item Database screen.
+     *
+     * @param initialItem The item to focus immediately upon opening, or null for default.
+     */
     public ItemDatabaseScreen(ItemEntry initialItem) {
         super(Component.literal("Item Database Viewer"));
 
@@ -201,8 +218,7 @@ public class ItemDatabaseScreen extends Screen {
                     }
                 }
 
-                // If the filter resulted in 0 items (e.g. empty Wishlist or 0 Owned),
-                // populate with all items so the card never vanishes into a null state
+                // If filter resulted in 0 items, populate with all items to prevent blank card
                 if (this.items.isEmpty()) {
                     this.items.addAll(combined);
                 }
@@ -215,6 +231,9 @@ public class ItemDatabaseScreen extends Screen {
         this.scrollOffset = 0;
     }
 
+    /**
+     * Returns the currently focused ItemEntry instance displayed on the card.
+     */
     public ItemEntry getCurrentItem() {
         if (items.isEmpty()) {
             updateItemList();
@@ -245,7 +264,7 @@ public class ItemDatabaseScreen extends Screen {
         boolean isCtrlDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS
                 || GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
 
-        // 1. Scale card with Ctrl + Mouse Wheel
+        // 1. Zoom/Scale card with Ctrl + Mouse Wheel
         if (isCtrlDown) {
             if (verticalAmount > 0) {
                 uiScale = Math.min(1.5F, uiScale + 0.05F);
@@ -546,14 +565,12 @@ public class ItemDatabaseScreen extends Screen {
             // --- 1. Dynamic Left Metadata (Below Art Box) ---
             int metaY = artBoxY + artBoxSize + 6;
 
-            // Win Chance or Group
-            if (item.isCrateItem()) {
-                graphics.text(this.font, Component.literal("§6Win Chance: §e" + item.winPercentage() + "%"), artBoxX, metaY, 0xFFFFFFFF);
-            } else {
+            // Group for Misc items (Win Chance is already shown in the lore on the right)
+            if (!item.isCrateItem()) {
                 String groupLabel = (item.groupId() == null || item.groupId().isEmpty()) ? "None" : item.groupId();
                 graphics.text(this.font, Component.literal("§dGroup: §f" + groupLabel), artBoxX, metaY, 0xFFFFFFFF);
+                metaY += 11;
             }
-            metaY += 11;
 
             // Base Item Name (e.g. netherite_hoe, elytra, paper)
             String baseItem = resolveCleanBaseItem(item);
@@ -637,71 +654,77 @@ public class ItemDatabaseScreen extends Screen {
             int maxTextWidth = panelWidth - 146;
             List<FormattedCharSequence> renderedLines = new ArrayList<>();
 
-            // 1. Try parsing JSON component lore from RawData first
-            List<Component> rawLoreComponents = (item.rawData() != null && !item.rawData().isBlank())
-                    ? RawDataParser.parseLore(item.rawData())
-                    : List.of();
+            // 1. Priority 1: Use RawDataParser to render Enchantments and authentic lore
+            boolean parsedLore = false;
+            if (item.rawData() != null && !item.rawData().isBlank()) {
+                try {
+                    List<Component> combined = new ArrayList<>();
 
-            if (!rawLoreComponents.isEmpty()) {
-                for (Component loreLine : rawLoreComponents) {
-                    String plain = loreLine.getString().trim();
-                    if (plain.isEmpty()) continue;
-                    if (plain.matches("^[\u2550\u2500=-]+$")) continue;
-                    if (plain.toLowerCase().startsWith("minecraft:") || plain.toLowerCase().startsWith("item: minecraft:")) continue;
+                    // Add enchantments at top
+                    List<Component> enchants = RawDataParser.parseEnchantments(item.rawData());
+                    if (enchants != null && !enchants.isEmpty()) {
+                        combined.addAll(enchants);
+                    }
 
-                    renderedLines.addAll(this.font.split(loreLine, maxTextWidth));
+                    // Add lore
+                    List<Component> rawLoreComponents = RawDataParser.parseLore(item.rawData());
+                    if (rawLoreComponents != null && !rawLoreComponents.isEmpty()) {
+                        combined.addAll(rawLoreComponents);
+                    }
+
+                    if (!combined.isEmpty()) {
+                        String canonicalItemName = item.itemName().replaceAll("[^a-zA-Z0-9]", "").toLowerCase();
+
+                        for (Component loreLine : combined) {
+                            String plain = loreLine.getString().trim();
+                            if (plain.replaceAll("[^a-zA-Z0-9]", "").toLowerCase().equals(canonicalItemName)) continue;
+                            if (plain.toLowerCase().startsWith("minecraft:") || plain.toLowerCase().startsWith("item: minecraft:")) continue;
+
+                            if (plain.isEmpty()) {
+                                renderedLines.add(FormattedCharSequence.EMPTY);
+                                continue;
+                            }
+
+                            renderedLines.addAll(this.font.split(loreLine, maxTextWidth));
+                            parsedLore = true;
+                        }
+                    }
+                } catch (Throwable t) {
+                    parsedLore = false;
                 }
-            } else {
-                // Fallback to token parsing if rawData is absent
+            }
+
+            // 2. Priority 2: Fallback to itemHuman if rawData is empty or has no lore
+            if (!parsedLore) {
                 String rawDesc = item.itemHuman();
                 if (rawDesc != null && !rawDesc.isBlank()) {
-                    String cleanDesc = CLEAN_REGEX_PATTERN.matcher(rawDesc).replaceAll("");
-
-                    String normalized = cleanDesc
+                    String normalized = rawDesc
                             .replace("\\r\\n", "\n")
                             .replace("\\n", "\n")
                             .replace("\r", "")
-                            .replaceAll("(?i)<br\\s*/?>", "\n")
-                            .replaceAll("[\u2550\u2500=-]{2,}", "\n")
-                            .replaceAll("\\s*>\\s*", "\n> ")
-                            .replaceAll("(?i)(Season \\d+:)", "\n$1")
-                            .replaceAll("(?i)(Rarity:)", "\n$1")
-                            .replaceAll("(?i)(Unbreakable)", "\n$1")
-                            .replaceAll("(?i)(Unmodifiable)", "\n$1")
-                            .replaceAll("(?i)(minecraft:[a-z0-9_]+)", "\n$1")
-                            .replaceAll("(?<=\\d)\\s+(?=[A-Z][a-z])", "\n")
-                            .replaceAll("(?<=\\d)(?=[A-Z])", "\n");
+                            .replaceAll("(?i)<br\\s*/?>", "\n");
 
-                    String[] rawTokens = TOKEN_SPLIT_PATTERN.split(normalized);
                     String canonicalItemName = item.itemName().replaceAll("[^a-zA-Z0-9]", "").toLowerCase();
 
-                    for (String token : rawTokens) {
-                        String clean = token.replaceAll("\\s+", " ").trim();
-                        if (clean.isEmpty()) continue;
+                    for (String raw : normalized.split("\n")) {
+                        String clean = raw.trim();
+                        if (clean.isEmpty()) {
+                            renderedLines.add(FormattedCharSequence.EMPTY);
+                            continue;
+                        }
 
                         String tokenKey = clean.replaceAll("[^a-zA-Z0-9]", "").toLowerCase();
                         if (tokenKey.equals(canonicalItemName)) continue;
-                        if (clean.matches("^[\u2550\u2500=-]+$")) continue;
-                        if (clean.toLowerCase().startsWith("rarity:")) continue;
                         if (clean.toLowerCase().startsWith("minecraft:") || clean.toLowerCase().startsWith("item: minecraft:")) continue;
 
-                        Component lineComponent;
-                        String lower = clean.toLowerCase();
-
-                        if (clean.startsWith(">")) {
-                            lineComponent = Component.literal("  §8> §7" + clean.substring(1).trim());
-                        } else if (lower.contains("crate")) {
-                            String stripped = clean.replaceAll("[▶◀►◄]", "").trim();
-                            String crateStyled = stripped.replaceAll("(?i)blossom", "§dBlossom").replaceAll("(?i)crate", "§bCrate");
-                            lineComponent = Component.literal("§7▶ " + crateStyled + " §7◀");
-                        } else if (lower.startsWith("season")) {
-                            lineComponent = Component.literal("§7" + clean.replaceFirst("(?i)season\\s*(\\d+):?", "Season $1: §6❀ §e") + " §6❀");
-                        } else if (clean.equalsIgnoreCase("unmodifiable") || clean.equalsIgnoreCase("unbreakable")) {
-                            lineComponent = Component.literal("§6✦ §e" + clean);
-                        } else {
-                            lineComponent = Component.literal("§b• §f" + clean);
+                        // Preserve divider borders
+                        if (clean.matches("^[═─=-]{3,}$")) {
+                            renderedLines.addAll(this.font.split(Component.literal("§8" + "═".repeat(28)), maxTextWidth));
+                            continue;
                         }
 
+                        // Convert '&' color codes to '§' and preserve existing formatting
+                        Component lineComponent = Component.literal(clean.replace('&', '§'));
                         renderedLines.addAll(this.font.split(lineComponent, maxTextWidth));
                     }
                 }
@@ -718,10 +741,13 @@ public class ItemDatabaseScreen extends Screen {
                     boolean hasSpecificCrate = false;
                     int genericBlossomLineIndex = -1;
 
-                    // Inspect the actual rendered text lines
+                    // Inspect rendered text lines
                     for (int i = 0; i < renderedLines.size(); i++) {
+                        FormattedCharSequence charSeq = renderedLines.get(i);
+                        if (charSeq == null) continue;
+
                         StringBuilder sb = new StringBuilder();
-                        renderedLines.get(i).accept((idx, style, codePoint) -> {
+                        charSeq.accept((idx, style, codePoint) -> {
                             sb.appendCodePoint(codePoint);
                             return true;
                         });
@@ -731,21 +757,17 @@ public class ItemDatabaseScreen extends Screen {
                             if (lineText.contains("blossom crate")) {
                                 genericBlossomLineIndex = i;
                             } else {
-                                // Already has a real, specific crate badge (e.g. "PIRATE COVE CRATE")
                                 hasSpecificCrate = true;
                                 break;
                             }
                         }
                     }
 
-                    // If it does NOT have an existing specific crate line:
                     if (!hasSpecificCrate) {
-                        // If it had a generic placeholder line, remove it
                         if (genericBlossomLineIndex != -1) {
                             renderedLines.remove(genericBlossomLineIndex);
                         }
 
-                        // Append the clean, styled group badge
                         String styledBadge = "§7▶ §a§l" + groupName.toUpperCase() + " §7◀";
                         renderedLines.addAll(this.font.split(Component.literal(styledBadge), maxTextWidth));
                     }
@@ -759,7 +781,7 @@ public class ItemDatabaseScreen extends Screen {
 
             int drawY = viewTop - scrollOffset;
             for (FormattedCharSequence line : renderedLines) {
-                if (drawY + 10 >= viewTop && drawY <= viewBottom) {
+                if (line != null && drawY + 10 >= viewTop && drawY <= viewBottom) {
                     graphics.text(this.font, line, textX, drawY, 0xFFFFFFFF);
                 }
                 drawY += 10;
@@ -873,6 +895,7 @@ public class ItemDatabaseScreen extends Screen {
 
     /**
      * Renders the slide-out navigation tree drawer on the left side of the card.
+     * Coordinates tab switching, live substring searching, and category expansions.
      */
     private void renderCrateDrawer(GuiGraphicsExtractor graphics, float localMouseX, float localMouseY) {
         if (!isDrawerOpen) return;
@@ -1324,22 +1347,20 @@ public class ItemDatabaseScreen extends Screen {
                                 graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
                             }
 
-                            String cleanName = item.itemName().replaceAll("(?i)§[0-9a-fk-or]", "").trim();
-                            String rarityColor = getRarityColor(item.rarityHuman());
-
                             boolean owned = CollectionManager.isOwned(item);
                             String statusIcon = owned ? "§a✔ " : "§8• ";
                             String prefix = isCurrent ? "  §e▶ " : "  " + statusIcon;
-                            String textFormat = isCurrent ? "§f§l" : rarityColor;
+
+                            Component nameComp = resolveItemDisplayName(item, isCurrent);
+                            MutableComponent fullRowComp = Component.literal(prefix).append(nameComp);
 
                             int availableTextWidth = drawerWidth - 24;
-                            if (this.font.width(prefix + textFormat + cleanName) > availableTextWidth) {
-                                while (cleanName.length() > 3 && this.font.width(prefix + textFormat + cleanName + "..") > availableTextWidth) {
-                                    cleanName = cleanName.substring(0, cleanName.length() - 1);
-                                }
-                                cleanName += "..";
+                            if (this.font.width(fullRowComp) > availableTextWidth) {
+                                String truncated = this.font.substrByWidth(fullRowComp, availableTextWidth - 8).getString();
+                                graphics.text(this.font, Component.literal(truncated + ".."), drawerX + 8, currentY, 0xFFFFFFFF);
+                            } else {
+                                graphics.text(this.font, fullRowComp, drawerX + 8, currentY, 0xFFFFFFFF);
                             }
-                            graphics.text(this.font, Component.literal(prefix + textFormat + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
                         }
 
                         drawerClickables.add(new ClickableRow(drawerX + 8, currentY, drawerWidth - 12, 10, () -> {
@@ -1362,7 +1383,7 @@ public class ItemDatabaseScreen extends Screen {
 
         } else if (currentCategory == ViewCategory.COLLECTION) {
             // ========================================================
-            // COLLECTION MODE (Approach B: Categorized Hierarchical Tree)
+            // COLLECTION MODE: Categorized Hierarchical Tree
             // ========================================================
             List<ItemEntry> totalAll = new ArrayList<>();
             totalAll.addAll(DatabaseManager.CRATE_ITEMS.values());
@@ -1538,7 +1559,6 @@ public class ItemDatabaseScreen extends Screen {
                             .filter(c -> c.crateType().equalsIgnoreCase(tab.label()))
                             .toList();
 
-                    // Pre-filter crates to check matches
                     List<CrateEntry> activeTabCrates = new ArrayList<>();
                     for (CrateEntry c : tabCrates) {
                         boolean hasMatches = c.items().stream().anyMatch(it -> {
@@ -1600,7 +1620,6 @@ public class ItemDatabaseScreen extends Screen {
                             String compColor = (crateCount == crate.items().size() && !crate.items().isEmpty()) ? "§a" : "§e";
                             Component countComp = Component.literal(" " + compColor + "(" + crateCount + "/" + crate.items().size() + ")");
 
-                            // getFormattedHeader(crateOpen) already includes the single ▼ / ▶ arrow
                             Component baseCrateHeader = crate.getFormattedHeader(crateOpen);
                             int maxHeaderWidth = drawerWidth - 24 - this.font.width("  ") - this.font.width(countComp);
 
@@ -1646,18 +1665,16 @@ public class ItemDatabaseScreen extends Screen {
                                                 : (owned ? "§a✔ " : "§8• ");
 
                                         String prefix = isCurrent ? "      §e▶ " : "      " + statusIcon;
-                                        String textFormat = isCurrent ? "§f§l" : getRarityColor(item.rarityHuman());
-                                        String cleanName = item.itemName().replaceAll("(?i)§[0-9a-fk-or]", "").trim();
+                                        Component nameComp = resolveItemDisplayName(item, isCurrent);
+                                        MutableComponent fullRowComp = Component.literal(prefix).append(nameComp);
 
                                         int availableTextWidth = drawerWidth - 28;
-                                        if (this.font.width(prefix + textFormat + cleanName) > availableTextWidth) {
-                                            while (cleanName.length() > 3 && this.font.width(prefix + textFormat + cleanName + "..") > availableTextWidth) {
-                                                cleanName = cleanName.substring(0, cleanName.length() - 1);
-                                            }
-                                            cleanName += "..";
+                                        if (this.font.width(fullRowComp) > availableTextWidth) {
+                                            String truncated = this.font.substrByWidth(fullRowComp, availableTextWidth - 8).getString();
+                                            graphics.text(this.font, Component.literal(truncated + ".."), drawerX + 8, currentY, 0xFFFFFFFF);
+                                        } else {
+                                            graphics.text(this.font, fullRowComp, drawerX + 8, currentY, 0xFFFFFFFF);
                                         }
-
-                                        graphics.text(this.font, Component.literal(prefix + textFormat + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
                                     }
 
                                     drawerClickables.add(new ClickableRow(drawerX + 8, currentY, drawerWidth - 12, 10, () -> {
@@ -1817,18 +1834,16 @@ public class ItemDatabaseScreen extends Screen {
                                                 : (owned ? "§a✔ " : "§8• ");
 
                                         String prefix = isCurrent ? "      §e▶ " : "      " + statusIcon;
-                                        String textFormat = isCurrent ? "§f§l" : getRarityColor(item.rarityHuman());
-                                        String cleanName = item.itemName().replaceAll("(?i)§[0-9a-fk-or]", "").trim();
+                                        Component nameComp = resolveItemDisplayName(item, isCurrent);
+                                        MutableComponent fullRowComp = Component.literal(prefix).append(nameComp);
 
                                         int availableTextWidth = drawerWidth - 28;
-                                        if (this.font.width(prefix + textFormat + cleanName) > availableTextWidth) {
-                                            while (cleanName.length() > 3 && this.font.width(prefix + textFormat + cleanName + "..") > availableTextWidth) {
-                                                cleanName = cleanName.substring(0, cleanName.length() - 1);
-                                            }
-                                            cleanName += "..";
+                                        if (this.font.width(fullRowComp) > availableTextWidth) {
+                                            String truncated = this.font.substrByWidth(fullRowComp, availableTextWidth - 8).getString();
+                                            graphics.text(this.font, Component.literal(truncated + ".."), drawerX + 8, currentY, 0xFFFFFFFF);
+                                        } else {
+                                            graphics.text(this.font, fullRowComp, drawerX + 8, currentY, 0xFFFFFFFF);
                                         }
-
-                                        graphics.text(this.font, Component.literal(prefix + textFormat + cleanName), drawerX + 8, currentY, 0xFFFFFFFF);
                                     }
 
                                     drawerClickables.add(new ClickableRow(drawerX + 8, currentY, drawerWidth - 12, 10, () -> {
@@ -1870,6 +1885,30 @@ public class ItemDatabaseScreen extends Screen {
         }
     }
 
+    /**
+     * Resolves the authentically formatted item name component matching the Crates & Misc tabs.
+     */
+    private Component resolveItemDisplayName(ItemEntry item, boolean isCurrent) {
+        if (item == null) return Component.literal("Unknown");
+
+        Component baseName;
+        if (item.rawData() != null && !item.rawData().isBlank()) {
+            baseName = RawDataParser.parseCustomName(item.rawData(), item.itemName());
+        } else if (item.itemName() != null) {
+            baseName = Component.literal(item.itemName().replace('&', '§'));
+        } else {
+            baseName = Component.literal("Unknown");
+        }
+
+        if (isCurrent) {
+            return Component.literal("§f§l").append(baseName);
+        }
+        return baseName;
+    }
+
+    /**
+     * Resolves Minecraft color formatting codes corresponding to standard rarity tiers.
+     */
     private String getRarityColor(String rarity) {
         if (rarity == null) return "§7";
         return switch (rarity.trim().toUpperCase()) {
@@ -1880,12 +1919,16 @@ public class ItemDatabaseScreen extends Screen {
             case "RARE" -> "§b";         // Aqua
             case "UNCOMMON" -> "§a";     // Green
             case "COMMON" -> "§f";       // White
-            default -> "§e";             // Yellow for custom/misc groups
+            default -> "§e";             // Yellow
         };
     }
 
     /**
-     * Safely truncates a Component to fit within maxWidth, preserving all styles and colors.
+     * Truncates a Component to fit within maxWidth, preserving all styles and color spans.
+     *
+     * @param comp     Text component to truncate.
+     * @param maxWidth Maximum permissible rendered pixel width.
+     * @return Formatted Component truncated with an ellipsis appended.
      */
     private Component truncateComponent(Component comp, int maxWidth) {
         if (this.font.width(comp) <= maxWidth) {
@@ -1916,6 +1959,9 @@ public class ItemDatabaseScreen extends Screen {
         return truncated.append(Component.literal(".."));
     }
 
+    /**
+     * Resolves the parent group name for a miscellaneous item.
+     */
     private String resolveGroupName(ItemEntry item) {
         if (item == null || item.groupId() == null) return null;
         try {
@@ -1927,6 +1973,4 @@ public class ItemDatabaseScreen extends Screen {
         } catch (NumberFormatException ignored) {}
         return null;
     }
-
-
 }

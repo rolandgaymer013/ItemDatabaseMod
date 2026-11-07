@@ -18,29 +18,53 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Handles asynchronous communication with the BlossomCraft item database REST API.
- * Parses, caches, and cross-references crate items, miscellaneous items, categories, and tags.
+ * Central client-side data repository and network controller for BlossomCraft.
+ * <p>
+ * Manages:
+ * <ul>
+ *   <li>Asynchronous HTTP calls to the Flask REST backend with timeout and redirect handling.</li>
+ *   <li>Thread-safe caching of Crate items, Miscellaneous items, Crates, and Misc Groups.</li>
+ *   <li>Relational tree assembly mapping flat database item rows into container hierarchies.</li>
+ *   <li>Fast in-memory index queries for UI autocompletion, search filtering, and set detection.</li>
+ * </ul>
  */
 public class DatabaseManager {
-    private static final String API_BASE = "https://items.blossomcraft.org";
+
+    /**
+     * Resolves the configured base API URL without trailing slashes.
+     *
+     * @return Normalized base API URL string (e.g. "https://blossomcraft.org").
+     */
+    public static String getApiBase() {
+        return com.roland.itemdatabase.config.ModConfig.get().getCleanApiUrl();
+    }
+
+    /** Shared HTTP client with automatic redirect following and a 10-second connection timeout. */
     private static final HttpClient CLIENT = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.ALWAYS)
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
-    // Primary item caches: Item ID -> ItemEntry
+    /** Primary item cache mapping Crate Item ID -> ItemEntry. */
     public static final Map<String, ItemEntry> CRATE_ITEMS = new ConcurrentHashMap<>();
+
+    /** Secondary item cache mapping Miscellaneous Item ID -> ItemEntry. */
     public static final Map<String, ItemEntry> MISC_ITEMS = new ConcurrentHashMap<>();
 
-    // Backwards-compatibility alias for CRATE_ITEMS
+    /** Backwards-compatibility alias referencing CRATE_ITEMS. */
     public static final Map<String, ItemEntry> ITEM_CACHE = CRATE_ITEMS;
 
-    // Category / Group caches
+    /** Container cache mapping Crate ID -> CrateEntry. */
     public static final Map<Integer, CrateEntry> CRATES = new ConcurrentHashMap<>();
+
+    /** Container cache mapping Group ID -> MiscGroupEntry. */
     public static final Map<Integer, MiscGroupEntry> MISC_GROUPS = new ConcurrentHashMap<>();
 
     /**
-     * Initializes the client database by preloading all crates, misc items, and grouping trees in parallel.
+     * Initializes the client database by preloading all crates, misc items,
+     * and container groups concurrently across background worker threads.
+     *
+     * @return CompletableFuture resolving to true if items were successfully ingested into memory.
      */
     public static CompletableFuture<Boolean> preloadDatabase() {
         return CompletableFuture.allOf(
@@ -55,16 +79,22 @@ public class DatabaseManager {
         });
     }
 
+    /**
+     * Entrypoint invoked during mod initialization to kick off background preloading.
+     */
     public static void initialize() {
         preloadDatabase();
     }
 
     /**
-     * Fetches all crate items from /api/items.
+     * Requests and loads all crate items from GET /api/items.
+     * Uses 'I-INCLUDED-INFO: *' header to ensure all metadata columns are returned.
+     *
+     * @return CompletableFuture resolving to true if parsing succeeded.
      */
     public static CompletableFuture<Boolean> fetchCrateItems() {
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(API_BASE + "/api/items"))
+                .uri(URI.create(getApiBase() + "/api/items"))
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                 .header("Accept", "application/json")
                 .header("I-INCLUDED-INFO", "*")
@@ -72,7 +102,7 @@ public class DatabaseManager {
                 .GET()
                 .build();
 
-        ItemDatabase.LOGGER.info("[ItemDatabase] Requesting Crate Items from {}/api/items", API_BASE);
+        ItemDatabase.LOGGER.info("[ItemDatabase] Requesting Crate Items from {}/api/items", getApiBase());
 
         return CLIENT.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenApply(response -> {
@@ -91,11 +121,13 @@ public class DatabaseManager {
     }
 
     /**
-     * Fetches all miscellaneous server items from /api/miscitems.
+     * Requests and loads all miscellaneous server items from GET /api/miscitems.
+     *
+     * @return CompletableFuture resolving to true if parsing succeeded.
      */
     public static CompletableFuture<Boolean> fetchMiscItems() {
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(API_BASE + "/api/miscitems"))
+                .uri(URI.create(getApiBase() + "/api/miscitems"))
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                 .header("Accept", "application/json")
                 .header("I-INCLUDED-INFO", "*")
@@ -103,7 +135,7 @@ public class DatabaseManager {
                 .GET()
                 .build();
 
-        ItemDatabase.LOGGER.info("[ItemDatabase] Requesting Misc Items from {}/api/miscitems", API_BASE);
+        ItemDatabase.LOGGER.info("[ItemDatabase] Requesting Misc Items from {}/api/miscitems", getApiBase());
 
         return CLIENT.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenApply(response -> {
@@ -121,6 +153,10 @@ public class DatabaseManager {
                 });
     }
 
+    /**
+     * Deserializes the JSON payload from /api/items into the CRATE_ITEMS cache.
+     * Supports raw arrays, standard envelope wrappers ("data"), or keyed dictionaries.
+     */
     private static boolean parseCrateResponse(String jsonString) {
         try {
             JsonElement root = JsonParser.parseString(jsonString);
@@ -157,6 +193,9 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * Instantiates an ItemEntry record from an individual crate item JSON object.
+     */
     private static void processCrateObject(String fallbackKey, JsonObject obj) {
         String id = getStringSafe(obj, "id", "");
         if (id.isEmpty()) {
@@ -169,13 +208,30 @@ public class DatabaseManager {
         String rawData = getStringSafe(obj, "RawData", "");
         String rarityHuman = getStringSafe(obj, "RarityHuman", "Common");
         String winPercentage = getStringSafe(obj, "WinPercentage", "0");
-        String imageType = getStringSafe(obj, "ImageType", "png");
+        String rawImageType = getStringSafe(obj, "ImageType", null);
+        String imageType = (rawImageType == null || rawImageType.isBlank() || rawImageType.equalsIgnoreCase("none") || rawImageType.equalsIgnoreCase("null"))
+                ? null
+                : rawImageType.toLowerCase();
         String crateId = getStringSafe(obj, "CrateID", "");
         String notes = getStringSafe(obj, "Notes", "");
 
-        String iconUrl = API_BASE + "/static/images/Icons/" + id + "." + imageType.toLowerCase();
+        // Determine numerical display order within the crate
+        int itemOrder = 0;
+        if (obj.has("ItemOrder") && !obj.get("ItemOrder").isJsonNull()) {
+            try {
+                itemOrder = obj.get("ItemOrder").getAsInt();
+            } catch (Exception ignored) {}
+        } else if (obj.has("order") && !obj.get("order").isJsonNull()) {
+            try {
+                itemOrder = obj.get("order").getAsInt();
+            } catch (Exception ignored) {}
+        }
 
-        // Extract the 7 database tag columns
+        String iconUrl = (imageType != null)
+                ? getApiBase() + "/static/images/BlossomCraft_Icons/" + id + "." + imageType
+                : "";
+
+        // Extract the 7 database classification tag columns
         List<String> tagsList = new ArrayList<>();
         String[] tagKeys = {
                 "TagPrimary", "TagSecondary", "TagTertiary",
@@ -193,20 +249,24 @@ public class DatabaseManager {
                 itemName,
                 itemHuman,
                 rawData,
-                imageType.toLowerCase(),
+                imageType,
                 winPercentage,
                 rarityHuman,
                 notes,
-                "",        // groupId
+                "",        // groupId (empty for crate items)
                 crateId,   // crateId
                 iconUrl,
                 true,      // isCrateItem
-                tagsList
+                tagsList,
+                itemOrder
         );
 
         CRATE_ITEMS.put(id, entry);
     }
 
+    /**
+     * Deserializes the JSON payload from /api/miscitems into the MISC_ITEMS cache.
+     */
     private static boolean parseMiscResponse(String jsonString) {
         try {
             JsonElement root = JsonParser.parseString(jsonString);
@@ -239,6 +299,9 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * Instantiates an ItemEntry record from an individual miscellaneous item JSON object.
+     */
     private static void processMiscObject(JsonObject obj) {
         String id = getStringSafe(obj, "id", "");
         if (id.isEmpty()) {
@@ -249,11 +312,24 @@ public class DatabaseManager {
         String itemName = getStringSafe(obj, "ItemName", "Item " + id);
         String itemHuman = getStringSafe(obj, "ItemHuman", "");
         String rawData = getStringSafe(obj, "RawData", "");
-        String imageType = getStringSafe(obj, "ImageType", "png").toLowerCase();
+        String imageType = getStringSafe(obj, "ImageType", null);
         String group = getStringSafe(obj, "GroupID", "");
         String notes = getStringSafe(obj, "Notes", "");
 
-        String iconUrl = API_BASE + "/static/images/Misc_Icons/" + id + "." + imageType;
+        int itemOrder = 0;
+        if (obj.has("ItemOrder") && !obj.get("ItemOrder").isJsonNull()) {
+            try {
+                itemOrder = obj.get("ItemOrder").getAsInt();
+            } catch (Exception ignored) {}
+        } else if (obj.has("order") && !obj.get("order").isJsonNull()) {
+            try {
+                itemOrder = obj.get("order").getAsInt();
+            } catch (Exception ignored) {}
+        }
+
+        String iconUrl = (imageType != null && !imageType.isBlank())
+                ? getApiBase() + "/static/images/BlossomCraft_Misc_Icons/" + id + "." + imageType.toLowerCase()
+                : "";
 
         List<String> tagsList = new ArrayList<>();
         String[] tagKeys = {
@@ -267,8 +343,32 @@ public class DatabaseManager {
             }
         }
 
+        // Dynamically resolve subcategory tag from parent group (Furniture, Voucher, Event, Unsorted)
+        String subCategory = null;
         if (!group.isBlank() && !group.equalsIgnoreCase("null") && !group.equalsIgnoreCase("none")) {
-            tagsList.add(group.trim());
+            try {
+                int gid = Integer.parseInt(group.trim());
+                MiscGroupEntry parentGroup = MISC_GROUPS.get(gid);
+                if (parentGroup != null && parentGroup.groupType() != null && !parentGroup.groupType().isBlank()) {
+                    subCategory = parentGroup.groupType().trim();
+                }
+            } catch (NumberFormatException ignored) {}
+
+            // Fallback: match by URLTag or name if numeric parse failed
+            if (subCategory == null) {
+                for (MiscGroupEntry g : MISC_GROUPS.values()) {
+                    if (g.urlTag().equalsIgnoreCase(group.trim()) || g.name().equalsIgnoreCase(group.trim())) {
+                        if (g.groupType() != null && !g.groupType().isBlank()) {
+                            subCategory = g.groupType().trim();
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (subCategory != null && !subCategory.equalsIgnoreCase("null") && !subCategory.equalsIgnoreCase("none")) {
+            tagsList.add(subCategory);
         }
 
         MISC_ITEMS.put(id, new ItemEntry(
@@ -277,17 +377,21 @@ public class DatabaseManager {
                 itemHuman,
                 rawData,
                 imageType,
-                null,                                              // winPercentage
-                (!group.isBlank() ? group.toUpperCase() : "MISC"), // rarityHuman
-                notes,                                             // notes
-                group,                                             // groupId
-                "",                                                // crateId
+                null,    // winPercentage (not applicable to misc items)
+                "",      // rarityHuman (misc items do not possess a rarity tier)
+                notes,
+                group,   // groupId
+                "",      // crateId
                 iconUrl,
-                false,                                             // isCrateItem
-                tagsList
+                false,   // isCrateItem
+                tagsList,
+                itemOrder
         ));
     }
 
+    /**
+     * Safely reads a string value from a JsonObject, falling back to a default if missing or null.
+     */
     private static String getStringSafe(JsonObject obj, String memberName, String fallback) {
         if (obj == null || !obj.has(memberName)) {
             return fallback;
@@ -300,11 +404,16 @@ public class DatabaseManager {
     }
 
     /**
-     * Fetches metadata for all active crates from /api/crates.
+     * Requests all crate container metadata from GET /api/crates and rebuilds crate mappings.
+     *
+     * @return CompletableFuture completing when crate headers are cached and items mapped.
      */
     public static CompletableFuture<Void> fetchCrates() {
+        String base = getApiBase().endsWith("/") ? getApiBase().substring(0, getApiBase().length() - 1) : getApiBase();
+        String endpoint = base + "/api/crates";
+
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(API_BASE + "/api/crates"))
+                .uri(URI.create(endpoint))
                 .header("User-Agent", "Mozilla/5.0")
                 .timeout(Duration.ofSeconds(10))
                 .GET()
@@ -312,6 +421,8 @@ public class DatabaseManager {
 
         return CLIENT.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .thenAccept(response -> {
+                    ItemDatabase.LOGGER.info("[ItemDatabase] fetchCrates to {} returned status: {}", endpoint, response.statusCode());
+
                     if (response.statusCode() == 200) {
                         JsonArray array = JsonParser.parseString(response.body()).getAsJsonArray();
                         CRATES.clear();
@@ -324,18 +435,22 @@ public class DatabaseManager {
                             String type = getStringSafe(obj, "CrateType", "Misc");
 
                             CRATES.put(id, new CrateEntry(id, name, date, tag, type));
+                            ItemDatabase.LOGGER.info("[ItemDatabase] Registered Crate: id={}, name='{}'", id, name);
                         }
                         mapItemsToCrates();
+                    } else {
+                        ItemDatabase.LOGGER.warn("[ItemDatabase] Failed to fetch crates: HTTP {} - {}", response.statusCode(), response.body());
                     }
                 })
                 .exceptionally(ex -> {
-                    ItemDatabase.LOGGER.error("[ItemDatabase] Failed fetching crates", ex);
+                    ItemDatabase.LOGGER.error("[ItemDatabase] Failed fetching crates from " + endpoint, ex);
                     return null;
                 });
     }
 
     /**
-     * Maps cached Crate items into their parent CrateEntry containers.
+     * Maps all items currently in CRATE_ITEMS into their parent CrateEntry containers.
+     * Resolves parentage using direct integer ID, slug URLTag, or crate display title.
      */
     public static synchronized void mapItemsToCrates() {
         for (CrateEntry crate : CRATES.values()) {
@@ -365,7 +480,7 @@ public class DatabaseManager {
                 }
             } catch (NumberFormatException ignored) {}
 
-            // 2. Match by URLTag or CrateName
+            // 2. Disambiguate by URLTag or CrateName
             for (CrateEntry crate : CRATES.values()) {
                 if (crate.urlTag().equalsIgnoreCase(trimmed)
                         || crate.name().equalsIgnoreCase(trimmed)
@@ -387,11 +502,13 @@ public class DatabaseManager {
     }
 
     /**
-     * Fetches metadata for all miscellaneous groups from /api/miscgroups.
+     * Requests all miscellaneous group metadata from GET /api/miscgroups.
+     *
+     * @return CompletableFuture resolving to true if groups were fetched and cached.
      */
     public static CompletableFuture<Boolean> fetchMiscGroups() {
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(API_BASE + "/api/miscgroups"))
+                .uri(URI.create(getApiBase() + "/api/miscgroups"))
                 .header("User-Agent", "Mozilla/5.0")
                 .header("Accept", "application/json")
                 .timeout(Duration.ofSeconds(15))
@@ -411,6 +528,10 @@ public class DatabaseManager {
                 });
     }
 
+    /**
+     * Parses the JSON payload from /api/miscgroups into the MISC_GROUPS cache.
+     * Extracts persistent GroupOrder indices to preserve custom sort sequences.
+     */
     private static boolean parseMiscGroupsResponse(String body) {
         try {
             JsonArray array = JsonParser.parseString(body).getAsJsonArray();
@@ -428,7 +549,23 @@ public class DatabaseManager {
                 String urlTag = getStringSafe(obj, "URLTag", "");
                 String release = getStringSafe(obj, "ReleaseDate", "");
 
-                MISC_GROUPS.put(id, new MiscGroupEntry(id, name, type, urlTag, release));
+                // Parse the GroupOrder column from the API
+                int groupOrder = 0;
+                if (obj.has("GroupOrder") && !obj.get("GroupOrder").isJsonNull()) {
+                    try {
+                        groupOrder = obj.get("GroupOrder").getAsInt();
+                    } catch (Exception ignored) {}
+                } else if (obj.has("Order") && !obj.get("Order").isJsonNull()) {
+                    try {
+                        groupOrder = obj.get("Order").getAsInt();
+                    } catch (Exception ignored) {}
+                } else if (obj.has("order") && !obj.get("order").isJsonNull()) {
+                    try {
+                        groupOrder = obj.get("order").getAsInt();
+                    } catch (Exception ignored) {}
+                }
+
+                MISC_GROUPS.put(id, new MiscGroupEntry(id, name, type, urlTag, release, groupOrder));
             }
             ItemDatabase.LOGGER.info("[ItemDatabase] Loaded {} misc groups", MISC_GROUPS.size());
             return true;
@@ -439,7 +576,8 @@ public class DatabaseManager {
     }
 
     /**
-     * Maps cached Misc items into their parent MiscGroupEntry containers.
+     * Maps all items currently in MISC_ITEMS into their parent MiscGroupEntry containers.
+     * Synchronizes group type tags back to child items for sub-filter queries.
      */
     public static synchronized void mapItemsToMiscGroups() {
         for (MiscGroupEntry group : MISC_GROUPS.values()) {
@@ -452,32 +590,55 @@ public class DatabaseManager {
             if (rawGroupId == null || rawGroupId.isBlank()) continue;
 
             String trimmed = rawGroupId.trim();
-            boolean matched = false;
+            MiscGroupEntry matchedGroup = null;
 
             try {
                 int numId = Integer.parseInt(trimmed);
                 if (MISC_GROUPS.containsKey(numId)) {
-                    MISC_GROUPS.get(numId).items().add(item);
-                    matched = true;
-                    mapped++;
+                    matchedGroup = MISC_GROUPS.get(numId);
                 }
             } catch (NumberFormatException ignored) {}
 
-            if (!matched) {
+            if (matchedGroup == null) {
                 for (MiscGroupEntry group : MISC_GROUPS.values()) {
                     if (group.name().equalsIgnoreCase(trimmed) || group.urlTag().equalsIgnoreCase(trimmed)) {
-                        group.items().add(item);
-                        mapped++;
+                        matchedGroup = group;
                         break;
                     }
                 }
+            }
+
+            if (matchedGroup != null) {
+                matchedGroup.items().add(item);
+                mapped++;
+
+                // Ensure tags list is mutable before modifying
+                try {
+                    String gType = (matchedGroup.groupType() != null && !matchedGroup.groupType().isBlank())
+                            ? matchedGroup.groupType().trim()
+                            : "Unsorted";
+
+                    List<String> mutableTags = new ArrayList<>(item.tags() != null ? item.tags() : List.of());
+                    mutableTags.removeIf(t -> t.equals(trimmed) || t.equalsIgnoreCase("null") || t.equalsIgnoreCase("none"));
+
+                    if (!mutableTags.contains(gType)) {
+                        mutableTags.add(0, gType);
+                    }
+
+                    if (item.tags() instanceof ArrayList<String>) {
+                        item.tags().clear();
+                        item.tags().addAll(mutableTags);
+                    }
+                } catch (Throwable ignored) {}
             }
         }
         ItemDatabase.LOGGER.info("[ItemDatabase] Mapped {} misc items across {} misc groups", mapped, MISC_GROUPS.size());
     }
 
     /**
-     * Collects all cached items across crates and miscellaneous categories.
+     * Aggregates all cached items across both crates and miscellaneous categories.
+     *
+     * @return Immutable snapshot list of all cached ItemEntry instances.
      */
     public static List<ItemEntry> getAllItems() {
         List<ItemEntry> all = new ArrayList<>(CRATE_ITEMS.values());
@@ -486,7 +647,18 @@ public class DatabaseManager {
     }
 
     /**
-     * Finds an item by matching its clean name or ID (case-insensitive).
+     * Searches the local cache for an item by matching its ID, exact name, or partial query.
+     * <p>
+     * Search priority:
+     * <ol>
+     *   <li>Direct numerical ID equality.</li>
+     *   <li>Exact case-insensitive match against clean item name.</li>
+     *   <li>Item name begins with query substring.</li>
+     *   <li>Item name contains query substring.</li>
+     * </ol>
+     *
+     * @param query Search query string (numerical ID or text string).
+     * @return Matching ItemEntry instance, or null if no match is found.
      */
     public static ItemEntry findItemByName(String query) {
         if (query == null || query.isBlank()) return null;
@@ -512,6 +684,50 @@ public class DatabaseManager {
         // 4. Name contains query
         for (ItemEntry item : all) {
             if (item.getCleanName().toLowerCase().contains(lower)) return item;
+        }
+
+        return null;
+    }
+
+    /**
+     * Finds an ItemEntry across all loaded crate items and misc items by integer ID.
+     *
+     * @param id Database primary key integer ID.
+     * @return ItemEntry if found, or null.
+     */
+    public static ItemEntry findItemById(int id) {
+        String strId = String.valueOf(id);
+        ItemEntry item = CRATE_ITEMS.get(strId);
+        if (item != null) return item;
+        return MISC_ITEMS.get(strId);
+    }
+
+    /**
+     * Finds the parent CrateEntry that contains a given item ID.
+     *
+     * @param itemId Unique database ID of the child item.
+     * @return Associated CrateEntry instance, or null if unassigned or orphaned.
+     */
+    public static CrateEntry findCrateByItemId(int itemId) {
+        ItemEntry item = findItemById(itemId);
+        if (item == null || item.crateId() == null || item.crateId().isBlank()) {
+            return null;
+        }
+
+        // 1. Direct numerical crate ID lookup
+        try {
+            int cId = Integer.parseInt(item.crateId().trim());
+            if (CRATES.containsKey(cId)) {
+                return CRATES.get(cId);
+            }
+        } catch (NumberFormatException ignored) {}
+
+        // 2. Disambiguate by URLTag or Crate display name
+        String tagOrName = item.crateId().trim();
+        for (CrateEntry crate : CRATES.values()) {
+            if (crate.urlTag().equalsIgnoreCase(tagOrName) || crate.name().equalsIgnoreCase(tagOrName)) {
+                return crate;
+            }
         }
 
         return null;
