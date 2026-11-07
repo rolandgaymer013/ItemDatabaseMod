@@ -47,20 +47,30 @@ public class ItemDatabaseCommand {
     /**
      * Constructs the Brigadier command dispatch tree.
      */
+    /**
+     * Constructs the Brigadier command dispatch tree.
+     */
     private static void init(CommandDispatcher<FabricClientCommandSource> dispatcher, CommandBuildContext context) {
         dispatcher.register(
                 literal("idb")
-                        // Bare "/idb" opens the database
+                        // Bare "/idb" opens the database for everyone
                         .executes(c -> openDatabase(null))
 
                         // Admin sub-command tree
                         .then(literal("admin")
-                                // /idb admin verify
+                                // Allow setting the token without already having one
+                                .then(literal("token")
+                                        .then(argument("token", StringArgumentType.word())
+                                                .executes(ItemDatabaseCommand::handleSetToken)
+                                        )
+                                )
+                                // All privileged admin commands require an admin token configured
                                 .then(literal("verify")
+                                        .requires(src -> ModConfig.get().hasAdminToken())
                                         .executes(ItemDatabaseCommand::handleAdminVerify)
                                 )
-                                // /idb admin gui
                                 .then(literal("gui")
+                                        .requires(src -> ModConfig.get().hasAdminToken())
                                         .executes(ctx -> {
                                             Minecraft mc = Minecraft.getInstance();
                                             if (mc.player == null) return 0;
@@ -77,21 +87,15 @@ public class ItemDatabaseCommand {
                                             return 1;
                                         })
                                 )
-                                // /idb admin token <token>
-                                .then(literal("token")
-                                        .then(argument("token", StringArgumentType.word())
-                                                .executes(ItemDatabaseCommand::handleSetToken)
-                                        )
-                                )
-                                // /idb admin upload [crateId]
                                 .then(literal("upload")
+                                        .requires(src -> ModConfig.get().hasAdminToken())
                                         .executes(c -> handleAdminUpload(c, 1))
                                         .then(argument("crateId", IntegerArgumentType.integer(1))
                                                 .executes(c -> handleAdminUpload(c, IntegerArgumentType.getInteger(c, "crateId")))
                                         )
                                 )
-                                // /idb admin batch <crateName>
                                 .then(literal("batch")
+                                        .requires(src -> ModConfig.get().hasAdminToken())
                                         .then(argument("crateName", StringArgumentType.greedyString())
                                                 .suggests(ItemDatabaseCommand::getCrateSuggestions)
                                                 .executes(ItemDatabaseCommand::handleAdminBatchUpload)
@@ -99,7 +103,7 @@ public class ItemDatabaseCommand {
                                 )
                         )
 
-                        // Item search autocomplete: /idb <item name>
+                        // Item search autocomplete for everyone: /idb <item name>
                         .then(argument("item", StringArgumentType.greedyString())
                                 .suggests(ItemDatabaseCommand::getItemSuggestions)
                                 .executes(c -> {

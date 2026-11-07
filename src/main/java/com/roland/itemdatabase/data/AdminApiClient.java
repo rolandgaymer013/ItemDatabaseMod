@@ -365,6 +365,10 @@ public class AdminApiClient {
      * @return CompletableFuture resolving to MutationResult indicating upload status.
      */
     public static CompletableFuture<MutationResult> uploadItemIcon(int itemId, java.io.File file) {
+        return uploadItemIcon(itemId, file, false);
+    }
+
+    public static CompletableFuture<MutationResult> uploadItemIcon(int itemId, java.io.File file, boolean isMisc) {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 ModConfig config = ModConfig.get();
@@ -376,10 +380,8 @@ public class AdminApiClient {
                 byte[] fileBytes = java.nio.file.Files.readAllBytes(file.toPath());
                 String filename = file.getName();
 
-                // Detect appropriate MIME type based on file extension
                 String mimeType = filename.toLowerCase().endsWith(".gif") ? "image/gif" : "image/png";
 
-                // Build multipart/form-data payload in memory
                 java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
                 body.write(("--" + boundary + "\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 body.write(("Content-Disposition: form-data; name=\"image\"; filename=\"" + filename + "\"\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -387,7 +389,8 @@ public class AdminApiClient {
                 body.write(fileBytes);
                 body.write(("\r\n--" + boundary + "--\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
 
-                String endpoint = config.getCleanApiUrl() + "/api/v1/admin/item/" + itemId + "/icon";
+                String typeParam = isMisc ? "misc" : "crate";
+                String endpoint = config.getCleanApiUrl() + "/api/v1/admin/item/" + itemId + "/icon?type=" + typeParam;
 
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(endpoint))
@@ -535,7 +538,7 @@ public class AdminApiClient {
         }
         payload.add("group_ids", array);
 
-        String url = config.getCleanApiUrl() + "/api/v1/admin/miscgroups/reorder";
+        String url = config.getCleanApiUrl() + "/api/v1/admin/miscgroup/reorder";
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
