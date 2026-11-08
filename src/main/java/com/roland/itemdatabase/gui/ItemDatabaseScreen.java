@@ -1074,20 +1074,12 @@ public class ItemDatabaseScreen extends Screen {
                             String statusIcon = owned ? "§a✔ " : "§8• ";
                             String prefix = isCurrent ? "  §e▶ " : "  " + statusIcon;
 
-                            Component nameComp = (item.rawData() != null && !item.rawData().isBlank())
-                                    ? RawDataParser.parseCustomName(item.rawData(), item.itemName())
-                                    : Component.literal(getRarityColor(item.rarityHuman()) + item.itemName());
-
-                            Component finalName = isCurrent
-                                    ? Component.literal("§f§l" + nameComp.getString())
-                                    : nameComp;
-
-                            MutableComponent itemRowComp = Component.literal(prefix).append(finalName);
+                            Component nameComp = resolveItemDisplayName(item, isCurrent);
+                            MutableComponent itemRowComp = Component.literal(prefix).append(nameComp);
 
                             int availableTextWidth = drawerWidth - 28;
                             if (this.font.width(itemRowComp) > availableTextWidth) {
-                                String truncated = this.font.substrByWidth(itemRowComp, availableTextWidth - 8).getString();
-                                graphics.text(this.font, Component.literal(truncated + ".."), drawerX + 8, currentY, 0xFFFFFFFF);
+                                graphics.text(this.font, truncateComponent(itemRowComp, availableTextWidth), drawerX + 8, currentY, 0xFFFFFFFF);
                             } else {
                                 graphics.text(this.font, itemRowComp, drawerX + 8, currentY, 0xFFFFFFFF);
                             }
@@ -1229,20 +1221,12 @@ public class ItemDatabaseScreen extends Screen {
                             String statusIcon = owned ? "§a✔ " : "§8• ";
                             String prefix = isCurrent ? "  §e▶ " : "  " + statusIcon;
 
-                            Component miscNameComp = (item.rawData() != null && !item.rawData().isBlank())
-                                    ? RawDataParser.parseCustomName(item.rawData(), item.itemName())
-                                    : Component.literal(getRarityColor(item.rarityHuman()) + item.itemName());
+                            Component miscNameComp = resolveItemDisplayName(item, isCurrent);
+                            MutableComponent miscRowComp = Component.literal(prefix).append(miscNameComp);
 
-                            Component finalMiscName = isCurrent
-                                    ? Component.literal("§f§l" + miscNameComp.getString())
-                                    : miscNameComp;
-
-                            MutableComponent miscRowComp = Component.literal(prefix).append(finalMiscName);
-
-                            int availableTextWidth = drawerWidth - 24;
+                            int availableTextWidth = drawerWidth - 28;
                             if (this.font.width(miscRowComp) > availableTextWidth) {
-                                String truncated = this.font.substrByWidth(miscRowComp, availableTextWidth - 8).getString();
-                                graphics.text(this.font, Component.literal(truncated + ".."), drawerX + 8, currentY, 0xFFFFFFFF);
+                                graphics.text(this.font, truncateComponent(miscRowComp, availableTextWidth), drawerX + 8, currentY, 0xFFFFFFFF);
                             } else {
                                 graphics.text(this.font, miscRowComp, drawerX + 8, currentY, 0xFFFFFFFF);
                             }

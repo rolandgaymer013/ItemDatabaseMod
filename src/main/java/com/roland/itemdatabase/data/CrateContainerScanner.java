@@ -8,6 +8,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.Style;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.component.ItemLore;
@@ -19,6 +20,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 public class CrateContainerScanner {
 
@@ -41,7 +43,21 @@ public class CrateContainerScanner {
 
             rawStacks.add(stack);
 
-            String cleanName = stack.getHoverName().getString().trim();
+            // 1. Extract leaf text spans from custom name or hover name
+            Component nameComp = stack.get(DataComponents.CUSTOM_NAME);
+            if (nameComp == null) {
+                nameComp = stack.getHoverName();
+            }
+
+            StringBuilder rawLeaves = new StringBuilder();
+            nameComp.visit((Style style, String text) -> {
+                rawLeaves.append(text);
+                return Optional.empty();
+            }, Style.EMPTY);
+
+            String rawExtracted = rawLeaves.toString().isEmpty() ? nameComp.getString() : rawLeaves.toString();
+            String cleanName = stripSectionSignsOnly(rawExtracted);
+
             if (cleanName.isEmpty()) {
                 cleanName = stack.getItem().getName(stack).getString().trim();
             }
@@ -251,19 +267,19 @@ public class CrateContainerScanner {
             if (lore == null || lore.lines().isEmpty()) continue;
 
             for (Component line : lore.lines()) {
-                String plain = line.getString().replaceAll("(?i)[&§][0-9a-fk-or]", "").trim();
+                String plain = stripSectionSignsOnly(line.getString());
 
                 // 1. Check for "Season XX: <NAME>"
                 if (plain.matches("(?i).*Season\\s+\\d+:\\s*.*")) {
                     int idx = plain.toLowerCase().indexOf("season");
-                    detectedCrateSeason = cleanDisplayName(plain.substring(idx).trim());
+                    detectedCrateSeason = plain.substring(idx).trim();
                     break;
                 }
 
                 // 2. Check for trading cards or defined sub-sets (e.g. "Nascent Nature")
                 if (plain.equalsIgnoreCase("Nascent Nature") || plain.contains("Series") || plain.contains("Set")) {
                     if (detectedGroupName == null) {
-                        detectedGroupName = cleanDisplayName(plain);
+                        detectedGroupName = plain;
                     }
                 }
             }
@@ -287,11 +303,16 @@ public class CrateContainerScanner {
         return new DetectedContainerMeta(false, "Emberfall - ", "emberfall-", "Unsorted");
     }
 
-    private static String cleanDisplayName(String raw) {
-        if (raw == null) return "";
-        return raw.replaceAll("(?i)[&§][0-9a-fk-or]", "") // remove minecraft color codes
-                .replaceAll("[^\\x20-\\x7E]", "")       // remove unprintable / non-ascii symbols
-                .replaceAll("\\s+", " ")                // normalize spaces
-                .trim();
+    /**
+     * Strips section formatting characters (§ and &) without deleting adjacent alphabetic letters or Unicode decorative symbols.
+     */
+    private static String stripSectionSignsOnly(String input) {
+        if (input == null) return "";
+        // First handle hex patterns like §x§f§f§5§5§5§5 -> remove the whole hex sequence
+        String text = input.replaceAll("(?i)[§&]x(?:[§&][0-9a-f]){6}", "");
+        // Remove individual section marks leaving the letters intact
+        text = text.replaceAll("[§&]", "");
+        // Normalize whitespace
+        return text.replaceAll("\\s+", " ").trim();
     }
 }

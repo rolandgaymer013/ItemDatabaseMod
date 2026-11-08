@@ -1,27 +1,26 @@
 package com.roland.itemdatabase.mixin;
 
+import com.roland.itemdatabase.config.ModConfig;
+import com.roland.itemdatabase.data.CollectionContainerScanner;
 import com.roland.itemdatabase.data.CollectionManager;
 import com.roland.itemdatabase.data.CrateContainerScanner;
-import com.roland.itemdatabase.data.CrateEntry;
 import com.roland.itemdatabase.data.DatabaseManager;
 import com.roland.itemdatabase.data.ItemEntry;
-import com.roland.itemdatabase.config.ModConfig;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
-import net.minecraft.client.gui.components.Renderable;
-import net.minecraft.client.gui.components.events.GuiEventListener;
-import net.minecraft.client.gui.narration.NarratableEntry;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
-import net.minecraft.client.gui.screens.inventory.CreativeModeInventoryScreen;
-import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.Style;
 import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ChestMenu;
+import net.minecraft.world.inventory.ShulkerBoxMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.component.CustomData;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
@@ -29,150 +28,162 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.regex.Pattern;
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.Set;
 
 @Mixin(AbstractContainerScreen.class)
-public abstract class AbstractContainerScreenMixin<T extends AbstractContainerMenu> extends Screen {
+public abstract class AbstractContainerScreenMixin extends Screen {
+
+    @Shadow protected int leftPos;
+    @Shadow protected int topPos;
+    @Shadow protected int imageWidth;
+    @Shadow protected AbstractContainerMenu menu;
+
+    @Unique private static final Set<String> CACHED_WISHLIST_KEYS = new HashSet<>();
+    @Unique private static int lastWishlistCount = -1;
+
+    // Slot-level cache: stores whether slot i has a wishlist item
+    @Unique private final boolean[] slotWishlistCache = new boolean[128];
+    @Unique private final ItemStack[] slotStackCache = new ItemStack[128];
 
     protected AbstractContainerScreenMixin(Component title) {
         super(title);
     }
 
-    @Shadow
-    protected T menu;
+    @Inject(method = "init", at = @At("TAIL"))
+    private void injectExteriorTabs(CallbackInfo ci) {
+        // Reset slot cache on screen open
+        for (int i = 0; i < slotStackCache.length; i++) {
+            slotStackCache[i] = ItemStack.EMPTY;
+            slotWishlistCache[i] = false;
+        }
 
-    @Shadow
-    protected int leftPos;
+        rebuildWishlistLookupCache();
 
-    @Shadow
-    protected int topPos;
-
-    @Shadow
-    protected int imageWidth;
-
-    @Unique
-    private static final Pattern STRIP_FORMATTING = Pattern.compile("(?i)[&§][0-9a-fk-or]|[^a-zA-Z0-9]");
-
-    @SuppressWarnings("MixinAnnotationTarget")
-    @Inject(method = "init", at = @At("RETURN"))
-    private void itemDatabase$addScanButton(CallbackInfo ci) {
-        // 1. Only show for players who have an admin API token configured
-        if (!ModConfig.get().hasAdminToken()) {
+        if (!(this.menu instanceof ChestMenu || this.menu instanceof ShulkerBoxMenu)) {
             return;
         }
 
-        // 2. Exclude Creative Mode tab screens and standard player survival inventory screens
-        Object current = this;
-        if (current instanceof CreativeModeInventoryScreen || current instanceof InventoryScreen) {
+        String titlePlain = ChatFormatting.stripFormatting(this.title.getString()).toLowerCase().trim();
+        if (titlePlain.contains("auction")
+                || titlePlain.contains("ender chest")
+                || titlePlain.contains("backpack")
+                || titlePlain.contains("vault")
+                || titlePlain.contains("disposal")
+                || titlePlain.contains("trash")) {
             return;
         }
 
-        // 3. Exclude server navigation menus, personal storage, backpacks, and ender chests by title
-        Component titleComp = this.getTitle();
-        if (titleComp != null) {
-            String rawTitle = titleComp.getString().toLowerCase().trim();
-            if (rawTitle.contains("select a server")
-                    || rawTitle.contains("server selector")
-                    || rawTitle.contains("hub")
-                    || rawTitle.contains("navigator")
-                    || rawTitle.contains("warps")
-                    || rawTitle.contains("menu")
-                    || rawTitle.contains("backpack")
-                    || rawTitle.contains("ender chest")) {
-                return;
-            }
+        AbstractContainerScreen<?> screen = (AbstractContainerScreen<?>) (Object) this;
+        boolean isAdmin = ModConfig.get().hasAdminToken();
+
+        int tabHeight = 16;
+        int tabY = this.topPos - tabHeight - 1;
+        int currentRightX = this.leftPos + this.imageWidth - 4;
+
+        if (isAdmin) {
+            int adminWidth = 46;
+            int adminX = currentRightX - adminWidth;
+            currentRightX = adminX - 3;
+
+            Button adminBtn = Button.builder(Component.literal("§d⚡ Admin"), b -> {
+                CrateContainerScanner.scanAndOpenReview(screen, null);
+            }).bounds(adminX, tabY, adminWidth, tabHeight).build();
+
+            adminBtn.setTooltip(Tooltip.create(Component.literal("Open Admin Staging & Upload Screen")));
+            this.addRenderableWidget(adminBtn);
         }
 
-        // 4. Ensure there is a top container section (exclude screens with <= 36 total slots)
-        if (this.menu == null || this.menu.slots.size() <= 36) {
-            return;
-        }
+        int collectWidth = 52;
+        int collectX = currentRightX - collectWidth;
 
-        // 5. Only show if crates are loaded in the database
-        List<CrateEntry> crates = new ArrayList<>(DatabaseManager.CRATES.values());
-        if (crates.isEmpty()) return;
+        Button collectBtn = Button.builder(Component.literal("§a📦 Collect"), b -> {
+            CollectionContainerScanner.scanAndOpenReview(screen);
+        }).bounds(collectX, tabY, collectWidth, tabHeight).build();
 
-        CrateEntry defaultCrate = crates.get(0);
-
-        int btnW = 54;
-        int btnH = 14;
-        int btnX = this.leftPos + this.imageWidth - btnW - 6;
-        int btnY = this.topPos + 4;
-
-        Button scanBtn = Button.builder(Component.literal("§d⚡ Scan"), btn -> {
-            AbstractContainerScreen<?> screen = (AbstractContainerScreen<?>) (Object) this;
-            CrateContainerScanner.scanAndOpenReview(screen, defaultCrate);
-        }).bounds(btnX, btnY, btnW, btnH).build();
-
-        this.addRenderableWidget(scanBtn);
+        collectBtn.setTooltip(Tooltip.create(Component.literal("Scan chest & choose items to add to your Collection")));
+        this.addRenderableWidget(collectBtn);
     }
 
-    @Inject(method = "extractSlots", at = @At("HEAD"))
-    private void itemDatabase$highlightWishlistSlots(GuiGraphicsExtractor graphics, int mouseX, int mouseY, CallbackInfo ci) {
-        if (CollectionManager.getWishlistCount() == 0 || this.menu == null) return;
+    @Inject(method = "extractRenderState", at = @At("TAIL"))
+    private void highlightWishlistSlots(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick, CallbackInfo ci) {
+        if (this.menu == null) return;
+        if (CACHED_WISHLIST_KEYS.isEmpty()) return;
 
-        float pulse = (float) (Math.sin(System.currentTimeMillis() / 220.0) * 0.5 + 0.5);
-        int alpha = 0x50 + (int) (pulse * 0x80);
-        int pulseBackground = (alpha << 24) | 0x00FFD700;
+        int containerSlotCount = Math.min(Math.max(0, this.menu.slots.size() - 36), slotWishlistCache.length);
 
-        for (Slot slot : this.menu.slots) {
-            if (!slot.isActive()) continue;
+        for (int i = 0; i < containerSlotCount; i++) {
+            Slot slot = this.menu.slots.get(i);
+            if (!slot.hasItem()) {
+                slotWishlistCache[i] = false;
+                slotStackCache[i] = ItemStack.EMPTY;
+                continue;
+            }
 
-            ItemStack stack = slot.getItem();
-            if (stack.isEmpty()) continue;
+            ItemStack currentStack = slot.getItem();
 
-            if (itemDatabase$isWishlisted(stack)) {
-                int slotX = slot.x;
-                int slotY = slot.y;
+            // Re-evaluate matching only if slot item reference or count changes
+            if (slotStackCache[i] != currentStack) {
+                slotStackCache[i] = currentStack;
+                slotWishlistCache[i] = isStackWishlistedFast(currentStack);
+            }
 
-                graphics.fill(slotX, slotY, slotX + 16, slotY + 16, pulseBackground);
-                graphics.outline(slotX - 1, slotY - 1, 18, 18, 0xFFFFD700);
-                graphics.outline(slotX, slotY, 16, 16, 0x88FFAA00);
+            if (slotWishlistCache[i]) {
+                int slotScreenX = this.leftPos + slot.x;
+                int slotScreenY = this.topPos + slot.y;
 
-                int badgeX = slotX + 11;
-                int badgeY = slotY + 1;
-                graphics.fill(badgeX + 2, badgeY,     badgeX + 3, badgeY + 1, 0xFFFFD700);
-                graphics.fill(badgeX + 1, badgeY + 1, badgeX + 4, badgeY + 2, 0xFFFFD700);
-                graphics.fill(badgeX,     badgeY + 2, badgeX + 5, badgeY + 3, 0xFFFFD700);
-                graphics.fill(badgeX + 1, badgeY + 3, badgeX + 4, badgeY + 4, 0xFFFFD700);
-                graphics.fill(badgeX + 2, badgeY + 4, badgeX + 3, badgeY + 5, 0xFFFFD700);
+                graphics.fill(slotScreenX, slotScreenY, slotScreenX + 16, slotScreenY + 16, 0x55FFD700);
+                graphics.outline(slotScreenX - 1, slotScreenY - 1, 18, 18, 0xFFFFD700);
             }
         }
     }
 
     @Unique
-    private boolean itemDatabase$isWishlisted(ItemStack stack) {
-        CustomData customData = stack.get(DataComponents.CUSTOM_DATA);
-        if (customData != null) {
-            var tag = customData.copyTag();
-            var idOpt = tag.getString("id");
-            if (idOpt.isPresent()) {
-                String customId = idOpt.get().toLowerCase();
-                for (ItemEntry it : DatabaseManager.getAllItems()) {
-                    if (it.id().equalsIgnoreCase(customId) && CollectionManager.isWishlisted(it)) {
-                        return true;
-                    }
-                }
-            }
+    private static void rebuildWishlistLookupCache() {
+        int currentCount = CollectionManager.getWishlistCount();
+        if (currentCount == lastWishlistCount && !CACHED_WISHLIST_KEYS.isEmpty()) {
+            return;
         }
 
-        var hoverName = stack.get(DataComponents.CUSTOM_NAME);
-        if (hoverName != null) {
-            String cleanStackName = STRIP_FORMATTING.matcher(hoverName.getString()).replaceAll("").toLowerCase().trim();
-            if (!cleanStackName.isEmpty()) {
-                for (ItemEntry it : DatabaseManager.getAllItems()) {
-                    if (CollectionManager.isWishlisted(it)) {
-                        String cleanCandidate = STRIP_FORMATTING.matcher(it.itemName()).replaceAll("").toLowerCase().trim();
-                        if (cleanCandidate.equals(cleanStackName) || cleanCandidate.contains(cleanStackName)) {
-                            return true;
-                        }
-                    }
-                }
+        CACHED_WISHLIST_KEYS.clear();
+        for (ItemEntry item : DatabaseManager.getAllItems()) {
+            if (CollectionManager.isWishlisted(item)) {
+                String rawClean = CollectionContainerScanner.stripSectionSignsOnly(item.itemName()).toLowerCase();
+                String alphanum = item.itemName().replaceAll("[^a-zA-Z0-9]", "").toLowerCase();
+                String cleanAlphanum = item.getCleanName().replaceAll("[^a-zA-Z0-9]", "").toLowerCase();
+
+                if (!rawClean.isBlank()) CACHED_WISHLIST_KEYS.add(rawClean);
+                if (!alphanum.isBlank()) CACHED_WISHLIST_KEYS.add(alphanum);
+                if (!cleanAlphanum.isBlank()) CACHED_WISHLIST_KEYS.add(cleanAlphanum);
             }
         }
+        lastWishlistCount = currentCount;
+    }
 
-        return false;
+    @Unique
+    private boolean isStackWishlistedFast(ItemStack stack) {
+        if (stack.isEmpty()) return false;
+
+        Component nameComp = stack.get(DataComponents.CUSTOM_NAME);
+        if (nameComp == null) {
+            nameComp = stack.getHoverName();
+        }
+
+        StringBuilder rawLeaves = new StringBuilder();
+        nameComp.visit((Style style, String text) -> {
+            rawLeaves.append(text);
+            return Optional.empty();
+        }, Style.EMPTY);
+
+        String raw = rawLeaves.toString().isEmpty() ? nameComp.getString() : rawLeaves.toString();
+        String cleanDisplay = CollectionContainerScanner.stripSectionSignsOnly(raw).toLowerCase();
+
+        if (CACHED_WISHLIST_KEYS.contains(cleanDisplay)) {
+            return true;
+        }
+
+        String normAlphanum = cleanDisplay.replaceAll("[^a-zA-Z0-9]", "");
+        return !normAlphanum.isBlank() && CACHED_WISHLIST_KEYS.contains(normAlphanum);
     }
 }

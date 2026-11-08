@@ -199,10 +199,27 @@ public record ItemEntry(
      */
     public String getCleanName() {
         if (this.itemName == null) return "";
-        return this.itemName
-                .replaceAll("(?i)§[0-9a-fk-or]", "")
-                .replaceAll("[✦★♦❀•▶◀►◄]", "")
-                .trim();
+
+        // 1. Strip Minecraft color formatting codes
+        String stripped = net.minecraft.ChatFormatting.stripFormatting(this.itemName);
+        if (stripped == null) return "";
+
+        // 2. Safely remove specific decorative unicode symbols without using regex ranges
+        // Notice: NO unescaped hyphen inside brackets!
+        stripped = stripped.replace("✦", "")
+                .replace("★", "")
+                .replace("⭐", "")
+                .replace("❀", "")
+                .replace("♥", "")
+                .replace("❤", "")
+                .replace("■", "")
+                .replace("◆", "")
+                .replace("•", "")
+                .replace("[", "")
+                .replace("]", "");
+
+        // 3. Normalize extra spaces
+        return stripped.trim().replaceAll("\\s+", " ");
     }
 
     /**
