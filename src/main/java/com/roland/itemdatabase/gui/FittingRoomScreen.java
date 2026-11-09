@@ -12,6 +12,10 @@ import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.item.component.ItemAttributeModifiers;
+import net.minecraft.world.item.component.ItemLore;
+import net.minecraft.core.component.DataComponents;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 import org.lwjgl.glfw.GLFW;
@@ -134,50 +138,32 @@ public class FittingRoomScreen extends Screen {
     }
 
     /**
-     * Cycles demo gear when clicking a slot to preview different armor sets.
+     * Cycles demo and custom items for offline testing.
      */
     private void cycleSlotItem(PreviewSlotWidget widget) {
-        ItemStack current = widget.getItemStack();
-        ItemStack next = ItemStack.EMPTY;
+        List<ItemStack> pool = MockServerItems.getTestPoolForSlot(widget.getSlot());
+        if (pool.isEmpty()) return;
 
-        switch (widget.getSlot()) {
-            case HEAD -> {
-                if (current.is(Items.DIAMOND_HELMET)) next = new ItemStack(Items.NETHERITE_HELMET);
-                else if (current.is(Items.NETHERITE_HELMET)) next = new ItemStack(Items.GOLDEN_HELMET);
-                else if (current.is(Items.GOLDEN_HELMET)) next = ItemStack.EMPTY;
-                else next = new ItemStack(Items.DIAMOND_HELMET);
+        ItemStack current = widget.getItemStack();
+        int currentIndex = -1;
+
+        // Find current item in the pool
+        for (int i = 0; i < pool.size(); i++) {
+            ItemStack testStack = pool.get(i);
+            if (current.isEmpty() && testStack.isEmpty()) {
+                currentIndex = i;
+                break;
+            } else if (!current.isEmpty() && !testStack.isEmpty()
+                    && current.is(testStack.getItem())
+                    && current.getHoverName().getString().equals(testStack.getHoverName().getString())) {
+                currentIndex = i;
+                break;
             }
-            case CHEST -> {
-                if (current.is(Items.NETHERITE_CHESTPLATE)) next = new ItemStack(Items.DIAMOND_CHESTPLATE);
-                else if (current.is(Items.DIAMOND_CHESTPLATE)) next = new ItemStack(Items.IRON_CHESTPLATE);
-                else if (current.is(Items.IRON_CHESTPLATE)) next = ItemStack.EMPTY;
-                else next = new ItemStack(Items.NETHERITE_CHESTPLATE);
-            }
-            case LEGS -> {
-                if (current.is(Items.NETHERITE_LEGGINGS)) next = new ItemStack(Items.DIAMOND_LEGGINGS);
-                else if (current.is(Items.DIAMOND_LEGGINGS)) next = new ItemStack(Items.IRON_LEGGINGS);
-                else if (current.is(Items.IRON_LEGGINGS)) next = ItemStack.EMPTY;
-                else next = new ItemStack(Items.NETHERITE_LEGGINGS);
-            }
-            case FEET -> {
-                if (current.is(Items.DIAMOND_BOOTS)) next = new ItemStack(Items.NETHERITE_BOOTS);
-                else if (current.is(Items.NETHERITE_BOOTS)) next = new ItemStack(Items.IRON_BOOTS);
-                else if (current.is(Items.IRON_BOOTS)) next = ItemStack.EMPTY;
-                else next = new ItemStack(Items.DIAMOND_BOOTS);
-            }
-            case MAINHAND -> {
-                if (current.is(Items.NETHERITE_SWORD)) next = new ItemStack(Items.DIAMOND_AXE);
-                else if (current.is(Items.DIAMOND_AXE)) next = new ItemStack(Items.TRIDENT);
-                else if (current.is(Items.TRIDENT)) next = ItemStack.EMPTY;
-                else next = new ItemStack(Items.NETHERITE_SWORD);
-            }
-            case OFFHAND -> {
-                if (current.is(Items.SHIELD)) next = new ItemStack(Items.TOTEM_OF_UNDYING);
-                else if (current.is(Items.TOTEM_OF_UNDYING)) next = ItemStack.EMPTY;
-                else next = new ItemStack(Items.SHIELD);
-            }
-            default -> {}
         }
+
+        // Get the next item in the list
+        int nextIndex = (currentIndex + 1) % pool.size();
+        ItemStack next = pool.get(nextIndex).copy();
 
         widget.setItemStack(next);
         if (this.dummy != null) {
@@ -193,54 +179,78 @@ public class FittingRoomScreen extends Screen {
         this.totalBonusHealth = 0;
         this.equippedTraits.clear();
 
-        boolean hasNetherite = false;
-        boolean hasShield = false;
-        boolean hasTotem = false;
-
         for (PreviewSlotWidget widget : this.slotWidgets) {
             ItemStack stack = widget.getItemStack();
             if (stack == null || stack.isEmpty()) continue;
 
-            // Armor calculations
-            if (stack.is(Items.DIAMOND_HELMET)) { this.totalArmor += 3; this.totalToughness += 2.0f; }
-            else if (stack.is(Items.NETHERITE_HELMET)) { this.totalArmor += 3; this.totalToughness += 3.0f; hasNetherite = true; }
-            else if (stack.is(Items.GOLDEN_HELMET)) { this.totalArmor += 2; }
+            EquipmentSlot slot = widget.getSlot();
 
-            else if (stack.is(Items.NETHERITE_CHESTPLATE)) { this.totalArmor += 8; this.totalToughness += 3.0f; hasNetherite = true; }
-            else if (stack.is(Items.DIAMOND_CHESTPLATE)) { this.totalArmor += 8; this.totalToughness += 2.0f; }
-            else if (stack.is(Items.IRON_CHESTPLATE)) { this.totalArmor += 6; }
+            // 1. Check for custom attribute modifiers component on the item
+            ItemAttributeModifiers modifiers = stack.get(DataComponents.ATTRIBUTE_MODIFIERS);
+            boolean hasCustomModifiers = false;
 
-            else if (stack.is(Items.NETHERITE_LEGGINGS)) { this.totalArmor += 6; this.totalToughness += 3.0f; hasNetherite = true; }
-            else if (stack.is(Items.DIAMOND_LEGGINGS)) { this.totalArmor += 6; this.totalToughness += 2.0f; }
-            else if (stack.is(Items.IRON_LEGGINGS)) { this.totalArmor += 5; }
+            if (modifiers != null && !modifiers.modifiers().isEmpty()) {
+                for (ItemAttributeModifiers.Entry entry : modifiers.modifiers()) {
+                    // Match against the slot group for this slot
+                    if (entry.slot().test(slot)) {
+                        var attr = entry.attribute();
+                        double amount = entry.modifier().amount();
 
-            else if (stack.is(Items.DIAMOND_BOOTS)) { this.totalArmor += 3; this.totalToughness += 2.0f; }
-            else if (stack.is(Items.NETHERITE_BOOTS)) { this.totalArmor += 3; this.totalToughness += 3.0f; hasNetherite = true; }
-            else if (stack.is(Items.IRON_BOOTS)) { this.totalArmor += 2; }
-
-            // Weapon & Offhand checks
-            if (widget.getSlot() == EquipmentSlot.MAINHAND) {
-                if (stack.is(Items.NETHERITE_SWORD)) { this.totalAttackDamage = 8.0; }
-                else if (stack.is(Items.DIAMOND_AXE)) { this.totalAttackDamage = 9.0; }
-                else if (stack.is(Items.TRIDENT)) { this.totalAttackDamage = 9.0; }
+                        if (attr.is(Attributes.ARMOR)) {
+                            this.totalArmor += (int) amount;
+                            hasCustomModifiers = true;
+                        } else if (attr.is(Attributes.ARMOR_TOUGHNESS)) {
+                            this.totalToughness += (float) amount;
+                            hasCustomModifiers = true;
+                        } else if (attr.is(Attributes.ATTACK_DAMAGE)) {
+                            this.totalAttackDamage += amount;
+                            hasCustomModifiers = true;
+                        } else if (attr.is(Attributes.MAX_HEALTH)) {
+                            this.totalBonusHealth += (int) amount;
+                            hasCustomModifiers = true;
+                        }
+                    }
+                }
             }
 
-            if (widget.getSlot() == EquipmentSlot.OFFHAND) {
-                if (stack.is(Items.SHIELD)) hasShield = true;
-                if (stack.is(Items.TOTEM_OF_UNDYING)) hasTotem = true;
-            }
-        }
+            // 2. Fallback to default vanilla stats if no custom modifiers were applied
+            if (!hasCustomModifiers) {
+                if (stack.is(Items.DIAMOND_HELMET)) { this.totalArmor += 3; this.totalToughness += 2.0f; }
+                else if (stack.is(Items.NETHERITE_HELMET)) { this.totalArmor += 3; this.totalToughness += 3.0f; }
+                else if (stack.is(Items.TURTLE_HELMET)) { this.totalArmor += 2; }
+                else if (stack.is(Items.NETHERITE_CHESTPLATE)) { this.totalArmor += 8; this.totalToughness += 3.0f; }
+                else if (stack.is(Items.DIAMOND_CHESTPLATE)) { this.totalArmor += 8; this.totalToughness += 2.0f; }
+                else if (stack.is(Items.NETHERITE_LEGGINGS)) { this.totalArmor += 6; this.totalToughness += 3.0f; }
+                else if (stack.is(Items.DIAMOND_LEGGINGS)) { this.totalArmor += 6; this.totalToughness += 2.0f; }
+                else if (stack.is(Items.DIAMOND_BOOTS)) { this.totalArmor += 3; this.totalToughness += 2.0f; }
+                else if (stack.is(Items.NETHERITE_BOOTS)) { this.totalArmor += 3; this.totalToughness += 3.0f; }
 
-        // Derive traits dynamically from equipped items
-        if (hasNetherite) {
-            this.equippedTraits.add(Component.literal("§7• §fKnockback Resistance"));
-        }
-        if (hasShield) {
-            this.equippedTraits.add(Component.literal("§7• §fProjectile Deflection"));
-        }
-        if (hasTotem) {
-            this.totalBonusHealth += 4;
-            this.equippedTraits.add(Component.literal("§7• §eSecond Chance (Totem)"));
+                if (slot == EquipmentSlot.MAINHAND) {
+                    if (stack.is(Items.NETHERITE_SWORD)) this.totalAttackDamage = 8.0;
+                    else if (stack.is(Items.DIAMOND_AXE)) this.totalAttackDamage = 9.0;
+                }
+            }
+
+            // 3. Inspect custom traits / lore
+            ItemLore lore = stack.get(DataComponents.LORE);
+            if (lore != null) {
+                for (Component line : lore.lines()) {
+                    String str = line.getString();
+                    if (str.startsWith("§eTrait:") || str.contains("Trait:")) {
+                        this.equippedTraits.add(Component.literal("§7• " + str.replace("§eTrait:", "").replace("Trait:", "").trim()));
+                    }
+                }
+            }
+
+            // Offhand specials
+            if (slot == EquipmentSlot.OFFHAND) {
+                if (stack.is(Items.SHIELD)) {
+                    this.equippedTraits.add(Component.literal("§7• §fProjectile Deflection"));
+                } else if (stack.is(Items.TOTEM_OF_UNDYING)) {
+                    this.totalBonusHealth += 4;
+                    this.equippedTraits.add(Component.literal("§7• §eSecond Chance (Totem)"));
+                }
+            }
         }
 
         if (this.equippedTraits.isEmpty()) {
