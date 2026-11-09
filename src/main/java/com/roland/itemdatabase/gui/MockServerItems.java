@@ -10,6 +10,14 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.ItemAttributeModifiers;
 import net.minecraft.world.item.component.ItemLore;
 import net.minecraft.resources.Identifier;
+import net.minecraft.core.Holder;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.world.item.equipment.trim.ArmorTrim;
+import net.minecraft.world.item.equipment.trim.TrimMaterial;
+import net.minecraft.world.item.equipment.trim.TrimMaterials;
+import net.minecraft.world.item.equipment.trim.TrimPattern;
+import net.minecraft.world.item.equipment.trim.TrimPatterns;
+import net.minecraft.world.item.component.DyedItemColor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -26,12 +34,14 @@ public class MockServerItems {
             case HEAD -> {
                 list.add(new ItemStack(Items.DIAMOND_HELMET));
                 list.add(createCustomHelmet());
+                list.add(createTrimmedHelmet());
                 list.add(new ItemStack(Items.NETHERITE_HELMET));
                 list.add(ItemStack.EMPTY);
             }
             case CHEST -> {
                 list.add(new ItemStack(Items.NETHERITE_CHESTPLATE));
                 list.add(createCustomChestplate());
+                list.add(createDyedChestplate());
                 list.add(new ItemStack(Items.DIAMOND_CHESTPLATE));
                 list.add(ItemStack.EMPTY);
             }
@@ -120,6 +130,33 @@ public class MockServerItems {
                 .build();
 
         stack.set(DataComponents.ATTRIBUTE_MODIFIERS, modifiers);
+        return stack;
+    }
+
+    private static ItemStack createTrimmedHelmet() {
+        ItemStack stack = new ItemStack(Items.NETHERITE_HELMET);
+        stack.set(DataComponents.CUSTOM_NAME, Component.literal("§6★ Spire Crown §7[Trimmed]"));
+
+        net.minecraft.client.Minecraft client = net.minecraft.client.Minecraft.getInstance();
+        if (client.level != null) {
+            var registryAccess = client.level.registryAccess();
+            var materialRegistry = registryAccess.lookupOrThrow(Registries.TRIM_MATERIAL);
+            var patternRegistry = registryAccess.lookupOrThrow(Registries.TRIM_PATTERN);
+
+            Holder<TrimMaterial> gold = materialRegistry.getOrThrow(TrimMaterials.GOLD);
+            Holder<TrimPattern> spire = patternRegistry.getOrThrow(TrimPatterns.SPIRE);
+
+            stack.set(DataComponents.TRIM, new ArmorTrim(gold, spire));
+        }
+        return stack;
+    }
+
+    private static ItemStack createDyedChestplate() {
+        ItemStack stack = new ItemStack(Items.LEATHER_CHESTPLATE);
+        stack.set(DataComponents.CUSTOM_NAME, Component.literal("§5★ Royal Tunic §7[Dyed]"));
+
+        // Deep purple tint (RGB: 0x5B1E7A)
+        stack.set(DataComponents.DYED_COLOR, new DyedItemColor(0x5B1E7A));
         return stack;
     }
 }
