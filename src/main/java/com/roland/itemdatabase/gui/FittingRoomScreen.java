@@ -1,5 +1,6 @@
 package com.roland.itemdatabase.gui;
 
+import com.roland.itemdatabase.data.MockServerItems;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
@@ -27,6 +28,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class FittingRoomScreen extends Screen {
+
+    private final java.util.Map<EquipmentSlot, ItemStack> currentLoadout = new java.util.EnumMap<>(EquipmentSlot.class);
 
     private final Screen parent;
     private PreviewDummyPlayer dummy;
@@ -59,6 +62,14 @@ public class FittingRoomScreen extends Screen {
     public FittingRoomScreen(Screen parent) {
         super(Component.literal("Fitting Room & Loadout Preview"));
         this.parent = parent;
+
+        // Populate default starter gear only once
+        this.currentLoadout.put(EquipmentSlot.HEAD, new ItemStack(Items.DIAMOND_HELMET));
+        this.currentLoadout.put(EquipmentSlot.CHEST, new ItemStack(Items.NETHERITE_CHESTPLATE));
+        this.currentLoadout.put(EquipmentSlot.LEGS, new ItemStack(Items.NETHERITE_LEGGINGS));
+        this.currentLoadout.put(EquipmentSlot.FEET, new ItemStack(Items.DIAMOND_BOOTS));
+        this.currentLoadout.put(EquipmentSlot.MAINHAND, new ItemStack(Items.NETHERITE_SWORD));
+        this.currentLoadout.put(EquipmentSlot.OFFHAND, new ItemStack(Items.SHIELD));
     }
 
     @Override
@@ -82,31 +93,32 @@ public class FittingRoomScreen extends Screen {
         int mannequinBoxY = panelY + 36;
         int mannequinBoxW = 110;
 
-        // Left Column Slots: Head, Chest, Legs, Feet
+        // 2. Left Column Slots: Head, Chest, Legs, Feet
         int leftColX = panelX + 10;
-        this.addSlot(leftColX, mannequinBoxY + 6, EquipmentSlot.HEAD, new ItemStack(Items.DIAMOND_HELMET));
-        this.addSlot(leftColX, mannequinBoxY + 32, EquipmentSlot.CHEST, new ItemStack(Items.NETHERITE_CHESTPLATE));
-        this.addSlot(leftColX, mannequinBoxY + 58, EquipmentSlot.LEGS, new ItemStack(Items.NETHERITE_LEGGINGS));
-        this.addSlot(leftColX, mannequinBoxY + 84, EquipmentSlot.FEET, new ItemStack(Items.DIAMOND_BOOTS));
+        this.addSlot(leftColX, mannequinBoxY + 6, EquipmentSlot.HEAD, this.currentLoadout.getOrDefault(EquipmentSlot.HEAD, ItemStack.EMPTY));
+        this.addSlot(leftColX, mannequinBoxY + 32, EquipmentSlot.CHEST, this.currentLoadout.getOrDefault(EquipmentSlot.CHEST, ItemStack.EMPTY));
+        this.addSlot(leftColX, mannequinBoxY + 58, EquipmentSlot.LEGS, this.currentLoadout.getOrDefault(EquipmentSlot.LEGS, ItemStack.EMPTY));
+        this.addSlot(leftColX, mannequinBoxY + 84, EquipmentSlot.FEET, this.currentLoadout.getOrDefault(EquipmentSlot.FEET, ItemStack.EMPTY));
 
-        // Right Column Slots: Mainhand & Offhand
+        // 3. Right Column Slots: Mainhand & Offhand
         int rightColX = mannequinBoxX + mannequinBoxW + 6;
-        this.addSlot(rightColX, mannequinBoxY + 32, EquipmentSlot.MAINHAND, new ItemStack(Items.NETHERITE_SWORD));
-        this.addSlot(rightColX, mannequinBoxY + 58, EquipmentSlot.OFFHAND, new ItemStack(Items.SHIELD));
+        this.addSlot(rightColX, mannequinBoxY + 32, EquipmentSlot.MAINHAND, this.currentLoadout.getOrDefault(EquipmentSlot.MAINHAND, ItemStack.EMPTY));
+        this.addSlot(rightColX, mannequinBoxY + 58, EquipmentSlot.OFFHAND, this.currentLoadout.getOrDefault(EquipmentSlot.OFFHAND, ItemStack.EMPTY));
 
         recalculateStats();
 
-        // Bottom Control Bar
+        // Bottom Control Bar: Evenly spaced 5-button footer
         int btnY = panelY + panelH + 8;
-        int btnSpacing = 6;
-        int btnW1 = 80;  // Reset View
-        int btnW2 = 85;  // Auto-Rotate
-        int btnW3 = 110; // Copy Player Gear
-        int btnW4 = 60;  // Back
-        int totalBtnW = btnW1 + btnW2 + btnW3 + btnW4 + (btnSpacing * 3);
+        int btnSpacing = 5;
+        int btnW1 = 70;  // Reset View
+        int btnW2 = 70;  // Spin: ON
+        int btnW3 = 90;  // Copy Gear
+        int btnW4 = 65;  // Presets
+        int btnW5 = 50;  // Back
+        int totalBtnW = btnW1 + btnW2 + btnW3 + btnW4 + btnW5 + (btnSpacing * 4);
         int btnStartX = panelX + (panelW - totalBtnW) / 2;
 
-        this.addRenderableWidget(Button.builder(Component.literal("Reset View"), button -> {
+        this.addRenderableWidget(Button.builder(Component.literal("Reset"), button -> {
             this.playerYaw = 0.0f;
             this.playerPitch = 0.0f;
             this.yawVelocity = 0.0f;
@@ -118,13 +130,17 @@ public class FittingRoomScreen extends Screen {
             button.setMessage(Component.literal(this.autoRotate ? "Spin: ON" : "Spin: OFF"));
         }).bounds(btnStartX + btnW1 + btnSpacing, btnY, btnW2, 20).build());
 
-        this.addRenderableWidget(Button.builder(Component.literal("Copy Player Gear"), button -> {
+        this.addRenderableWidget(Button.builder(Component.literal("Copy Gear"), button -> {
             this.syncFromPlayerInventory();
         }).bounds(btnStartX + btnW1 + btnW2 + (btnSpacing * 2), btnY, btnW3, 20).build());
 
+        this.addRenderableWidget(Button.builder(Component.literal("Presets"), button -> {
+            this.openPresetScreen();
+        }).bounds(btnStartX + btnW1 + btnW2 + btnW3 + (btnSpacing * 3), btnY, btnW4, 20).build());
+
         this.addRenderableWidget(Button.builder(Component.literal("Back"), button -> {
             this.onClose();
-        }).bounds(btnStartX + btnW1 + btnW2 + btnW3 + (btnSpacing * 3), btnY, btnW4, 20).build());
+        }).bounds(btnStartX + btnW1 + btnW2 + btnW3 + btnW4 + (btnSpacing * 4), btnY, btnW5, 20).build());
     }
 
     private void addSlot(int x, int y, EquipmentSlot slot, ItemStack defaultItem) {
@@ -427,7 +443,8 @@ public class FittingRoomScreen extends Screen {
         if (this.minecraft == null) return;
 
         this.minecraft.setScreen(new ItemCatalogPickerScreen(this, widget.getSlot(), selectedStack -> {
-            ItemStack copy = selectedStack.copy();
+            ItemStack copy = selectedStack == null || selectedStack.isEmpty() ? ItemStack.EMPTY : selectedStack.copy();
+            this.currentLoadout.put(widget.getSlot(), copy);
             widget.setItemStack(copy);
             if (this.dummy != null) {
                 this.dummy.setPreviewSlot(widget.getSlot(), copy);
@@ -442,5 +459,26 @@ public class FittingRoomScreen extends Screen {
         if (this.minecraft != null) {
             this.minecraft.setScreen(this.parent);
         }
+    }
+
+    private void openPresetScreen() {
+        if (this.minecraft == null) return;
+
+        this.minecraft.setScreen(new PresetScreen(this, this.currentLoadout, (java.util.Map<EquipmentSlot, ItemStack> loadedMap) -> {
+            for (EquipmentSlot slot : EquipmentSlot.values()) {
+                ItemStack stack = loadedMap.getOrDefault(slot, ItemStack.EMPTY);
+                this.currentLoadout.put(slot, stack.copy());
+            }
+
+            for (PreviewSlotWidget widget : this.slotWidgets) {
+                ItemStack stack = this.currentLoadout.getOrDefault(widget.getSlot(), ItemStack.EMPTY);
+                widget.setItemStack(stack.copy());
+                if (this.dummy != null) {
+                    this.dummy.setPreviewSlot(widget.getSlot(), stack.copy());
+                }
+            }
+            recalculateStats();
+            this.minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.ARMOR_EQUIP_NETHERITE.value(), 1.0f));
+        }));
     }
 }

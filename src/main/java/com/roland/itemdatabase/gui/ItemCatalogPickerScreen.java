@@ -1,11 +1,11 @@
 package com.roland.itemdatabase.gui;
 
+import com.roland.itemdatabase.data.MockServerItems;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipComponent;
-import net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipPositioner;
 import net.minecraft.client.gui.screens.inventory.tooltip.DefaultTooltipPositioner;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.EquipmentSlot;
@@ -153,21 +153,29 @@ public class ItemCatalogPickerScreen extends Screen {
             ItemStack stack = this.filteredPool.get(index);
             if (!stack.isEmpty()) {
                 graphics.item(stack, slotX + 2, slotY + 2);
+            } else {
+                // Ghost outline or label for empty option
+                graphics.centeredText(this.font, Component.literal("§c✕"), slotX + 10, slotY + 6, 0xFFFF5555);
             }
 
-            if (isHovered && !stack.isEmpty()) {
+            if (isHovered) {
                 hoveredItem = stack;
             }
         }
 
         // Tooltip rendering on top of the grid
-        if (hoveredItem != null && this.minecraft != null) {
+        if (hoveredItem != null && !hoveredItem.isEmpty() && this.minecraft != null) {
             var lines = Screen.getTooltipFromItem(this.minecraft, hoveredItem);
             List<ClientTooltipComponent> components = lines.stream()
                     .map(Component::getVisualOrderText)
                     .map(ClientTooltipComponent::create)
                     .toList();
             graphics.tooltip(this.font, components, mouseX, mouseY, DefaultTooltipPositioner.INSTANCE, null);
+        } else if (hoveredItem != null && hoveredItem.isEmpty()) {
+            List<ClientTooltipComponent> emptyTooltip = List.of(
+                    ClientTooltipComponent.create(Component.literal("§cUnequip Slot (Empty)").getVisualOrderText())
+            );
+            graphics.tooltip(this.font, emptyTooltip, mouseX, mouseY, DefaultTooltipPositioner.INSTANCE, null);
         }
     }
 

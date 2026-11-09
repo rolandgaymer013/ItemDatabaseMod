@@ -1,4 +1,4 @@
-package com.roland.itemdatabase.gui;
+package com.roland.itemdatabase.data;
 
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;

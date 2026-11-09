@@ -6,6 +6,7 @@ import com.roland.itemdatabase.data.ItemDatabaseCommand;
 import com.roland.itemdatabase.data.ItemEntry;
 import com.roland.itemdatabase.data.UpdateChecker;
 import com.roland.itemdatabase.data.WishlistChatListener;
+import com.roland.itemdatabase.gui.FittingRoomScreen;
 import com.roland.itemdatabase.gui.ItemDatabaseScreen;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -20,13 +21,6 @@ import org.lwjgl.glfw.GLFW;
 
 /**
  * Client entrypoint for the BlossomCraft Item Database Fabric mod.
- * Responsible for:
- * <ul>
- *   <li>Preloading all crate items, categories, and tags from the REST API asynchronously.</li>
- *   <li>Registering client commands (/idb, /idb admin) and chat listeners.</li>
- *   <li>Handling global keybindings (Database viewer hotkey, container batch uploader).</li>
- *   <li>Checking for newer mod version releases upon joining a server/world.</li>
- * </ul>
  */
 public class ItemDatabaseClient implements ClientModInitializer {
 
@@ -35,6 +29,9 @@ public class ItemDatabaseClient implements ClientModInitializer {
 
     /** Admin hotkey to initiate batch container uploads while inside an inventory (default: 'B'). */
     public static KeyMapping batchUploadKey;
+
+    /** Prototype debug hotkey to test the Fitting Room screen (default: 'H'). */
+    private static KeyMapping testFittingRoomKey;
 
     /** Active target crate configuration for batch uploads (default: 1 - Season 1: Legacy). */
     public static int activeCrateId = 1;
@@ -71,7 +68,14 @@ public class ItemDatabaseClient implements ClientModInitializer {
                 KeyMapping.Category.MISC
         ));
 
-        // 5. Global tick listener: Open database GUI when hotkey is pressed outside of open screens
+        testFittingRoomKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                "key.itemdatabase.fitting_test",
+                InputConstants.Type.KEYSYM,
+                GLFW.GLFW_KEY_H,
+                KeyMapping.Category.MISC
+        ));
+
+        // 5. Global tick listener: Open database GUI or Fitting Room test screen
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null) {
                 return;
@@ -79,13 +83,16 @@ public class ItemDatabaseClient implements ClientModInitializer {
 
             while (openDatabaseKey.consumeClick()) {
                 if (client.screen == null) {
-                    // Pick the first available cached item as the initial selection
                     ItemEntry initial = DatabaseManager.ITEM_CACHE.values().stream()
                             .findFirst()
                             .orElse(null);
 
                     client.setScreen(new ItemDatabaseScreen(initial));
                 }
+            }
+
+            while (testFittingRoomKey.consumeClick()) {
+                client.setScreen(new FittingRoomScreen(client.screen));
             }
         });
 
