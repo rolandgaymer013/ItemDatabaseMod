@@ -1,21 +1,29 @@
 package com.roland.itemdatabase.gui;
 
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
-import net.minecraft.client.gui.narration.NarrationElementOutput;
-import net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipComponent;
-import net.minecraft.network.chat.Component;
-import net.minecraft.world.entity.EquipmentSlot;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.client.input.MouseButtonEvent;
-import org.lwjgl.glfw.GLFW;
 import net.minecraft.client.gui.components.Tooltip;
+import net.minecraft.client.gui.narration.NarrationElementOutput;
+import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.client.renderer.RenderPipelines;
+import org.lwjgl.glfw.GLFW;
 
 import java.util.function.Consumer;
 
 public class PreviewSlotWidget extends AbstractWidget {
+
+    public static final Identifier EMPTY_SLOT_HELMET = Identifier.fromNamespaceAndPath("minecraft", "container/slot/helmet");
+    public static final Identifier EMPTY_SLOT_CHESTPLATE = Identifier.fromNamespaceAndPath("minecraft", "container/slot/chestplate");
+    public static final Identifier EMPTY_SLOT_LEGGINGS = Identifier.fromNamespaceAndPath("minecraft", "container/slot/leggings");
+    public static final Identifier EMPTY_SLOT_BOOTS = Identifier.fromNamespaceAndPath("minecraft", "container/slot/boots");
+    public static final Identifier EMPTY_SLOT_SHIELD = Identifier.fromNamespaceAndPath("minecraft", "container/slot/shield");
+    public static final Identifier EMPTY_SLOT_SWORD = Identifier.fromNamespaceAndPath("minecraft", "container/slot/sword");
 
     private final EquipmentSlot slot;
     private ItemStack itemStack;
@@ -48,7 +56,7 @@ public class PreviewSlotWidget extends AbstractWidget {
             return;
         }
 
-        net.minecraft.client.Minecraft client = net.minecraft.client.Minecraft.getInstance();
+        Minecraft client = Minecraft.getInstance();
         var lines = net.minecraft.client.gui.screens.Screen.getTooltipFromItem(client, this.itemStack);
 
         if (lines.isEmpty()) {
@@ -56,7 +64,6 @@ public class PreviewSlotWidget extends AbstractWidget {
             return;
         }
 
-        // Join tooltip lines with newlines so vanilla builds a multi-line formatted Tooltip
         Component combined = lines.get(0);
         for (int i = 1; i < lines.size(); i++) {
             combined = Component.empty().append(combined).append(CommonComponents.NEW_LINE).append(lines.get(i));
@@ -69,7 +76,7 @@ public class PreviewSlotWidget extends AbstractWidget {
     public boolean mouseClicked(MouseButtonEvent event, boolean bl) {
         if (this.active && this.visible && this.isHovered()) {
             if (event.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
-                this.playDownSound(net.minecraft.client.Minecraft.getInstance().getSoundManager());
+                this.playDownSound(Minecraft.getInstance().getSoundManager());
                 if (this.onClickAction != null) {
                     this.onClickAction.accept(this);
                 }
@@ -88,9 +95,21 @@ public class PreviewSlotWidget extends AbstractWidget {
         int borderColor = this.isHovered() ? 0xFFBA68C8 : 0xFF4A1A5E;
         graphics.outline(this.getX(), this.getY(), this.width, this.height, borderColor);
 
-        // Render item icon inside slot
+        // Render equipped item icon or translucent ghost silhouette
         if (this.itemStack != null && !this.itemStack.isEmpty()) {
             graphics.item(this.itemStack, this.getX() + 2, this.getY() + 2);
+        } else {
+            if (this.slot == EquipmentSlot.MAINHAND) {
+                // Ghost sword icon fallback
+                graphics.item(new ItemStack(net.minecraft.world.item.Items.IRON_SWORD), this.getX() + 2, this.getY() + 2);
+                // Dark tint overlay to make it look like a ghost silhouette
+                graphics.fill(this.getX() + 2, this.getY() + 2, this.getX() + 18, this.getY() + 18, 0x990D0414);
+            } else {
+                Identifier emptyIcon = getEmptySlotTexture();
+                if (emptyIcon != null) {
+                    graphics.blitSprite(RenderPipelines.GUI_TEXTURED, emptyIcon, this.getX() + 2, this.getY() + 2, 16, 16);
+                }
+            }
         }
     }
 
@@ -99,4 +118,14 @@ public class PreviewSlotWidget extends AbstractWidget {
         this.defaultButtonNarrationText(narrationElementOutput);
     }
 
+    public Identifier getEmptySlotTexture() {
+        return switch (this.slot) {
+            case HEAD -> EMPTY_SLOT_HELMET;
+            case CHEST -> EMPTY_SLOT_CHESTPLATE;
+            case LEGS -> EMPTY_SLOT_LEGGINGS;
+            case FEET -> EMPTY_SLOT_BOOTS;
+            case OFFHAND -> EMPTY_SLOT_SHIELD;
+            default -> null;
+        };
+    }
 }
