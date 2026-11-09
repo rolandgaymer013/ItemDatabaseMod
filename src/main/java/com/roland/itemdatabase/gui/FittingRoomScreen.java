@@ -6,16 +6,19 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.minecraft.client.renderer.entity.state.LivingEntityRenderState;
+import net.minecraft.client.resources.sounds.SimpleSoundInstance;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.Pose;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.item.component.ItemAttributeModifiers;
 import net.minecraft.world.item.component.ItemLore;
-import net.minecraft.core.component.DataComponents;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 import org.lwjgl.glfw.GLFW;
@@ -62,7 +65,6 @@ public class FittingRoomScreen extends Screen {
     protected void init() {
         super.init();
 
-        // 1. Clear existing widgets to prevent duplicates on resize
         this.clearWidgets();
         this.slotWidgets.clear();
 
@@ -71,7 +73,6 @@ public class FittingRoomScreen extends Screen {
             this.dummy = new PreviewDummyPlayer(client);
         }
 
-        // Panel and viewport frame layout calculations
         int panelW = 340;
         int panelH = 190;
         int panelX = (this.width - panelW) / 2;
@@ -81,22 +82,21 @@ public class FittingRoomScreen extends Screen {
         int mannequinBoxY = panelY + 36;
         int mannequinBoxW = 110;
 
-        // 2. Left Column Slots: Head, Chest, Legs, Feet
+        // Left Column Slots: Head, Chest, Legs, Feet
         int leftColX = panelX + 10;
         this.addSlot(leftColX, mannequinBoxY + 6, EquipmentSlot.HEAD, new ItemStack(Items.DIAMOND_HELMET));
         this.addSlot(leftColX, mannequinBoxY + 32, EquipmentSlot.CHEST, new ItemStack(Items.NETHERITE_CHESTPLATE));
         this.addSlot(leftColX, mannequinBoxY + 58, EquipmentSlot.LEGS, new ItemStack(Items.NETHERITE_LEGGINGS));
         this.addSlot(leftColX, mannequinBoxY + 84, EquipmentSlot.FEET, new ItemStack(Items.DIAMOND_BOOTS));
 
-        // 3. Right Column Slots: Mainhand & Offhand
+        // Right Column Slots: Mainhand & Offhand
         int rightColX = mannequinBoxX + mannequinBoxW + 6;
         this.addSlot(rightColX, mannequinBoxY + 32, EquipmentSlot.MAINHAND, new ItemStack(Items.NETHERITE_SWORD));
         this.addSlot(rightColX, mannequinBoxY + 58, EquipmentSlot.OFFHAND, new ItemStack(Items.SHIELD));
 
-        // Compute initial loadout stats
         recalculateStats();
 
-        // Bottom Control Bar: Evenly spaced 4-button footer
+        // Bottom Control Bar
         int btnY = panelY + panelH + 8;
         int btnSpacing = 6;
         int btnW1 = 80;  // Reset View
@@ -128,7 +128,7 @@ public class FittingRoomScreen extends Screen {
     }
 
     private void addSlot(int x, int y, EquipmentSlot slot, ItemStack defaultItem) {
-        PreviewSlotWidget widget = new PreviewSlotWidget(x, y, slot, defaultItem, this::cycleSlotItem);
+        PreviewSlotWidget widget = new PreviewSlotWidget(x, y, slot, defaultItem, this::openSlotPicker);
         this.slotWidgets.add(widget);
         this.addRenderableWidget(widget);
 
@@ -137,9 +137,6 @@ public class FittingRoomScreen extends Screen {
         }
     }
 
-    /**
-     * Cycles demo and custom items for offline testing.
-     */
     private void cycleSlotItem(PreviewSlotWidget widget) {
         List<ItemStack> pool = MockServerItems.getTestPoolForSlot(widget.getSlot());
         if (pool.isEmpty()) return;
@@ -147,7 +144,6 @@ public class FittingRoomScreen extends Screen {
         ItemStack current = widget.getItemStack();
         int currentIndex = -1;
 
-        // Find current item in the pool
         for (int i = 0; i < pool.size(); i++) {
             ItemStack testStack = pool.get(i);
             if (current.isEmpty() && testStack.isEmpty()) {
@@ -161,7 +157,6 @@ public class FittingRoomScreen extends Screen {
             }
         }
 
-        // Get the next item in the list
         int nextIndex = (currentIndex + 1) % pool.size();
         ItemStack next = pool.get(nextIndex).copy();
 
@@ -169,7 +164,9 @@ public class FittingRoomScreen extends Screen {
         if (this.dummy != null) {
             this.dummy.setPreviewSlot(widget.getSlot(), next);
         }
+
         recalculateStats();
+        playEquipSound(widget.getSlot(), next);
     }
 
     private void recalculateStats() {
@@ -185,13 +182,11 @@ public class FittingRoomScreen extends Screen {
 
             EquipmentSlot slot = widget.getSlot();
 
-            // 1. Check for custom attribute modifiers component on the item
             ItemAttributeModifiers modifiers = stack.get(DataComponents.ATTRIBUTE_MODIFIERS);
             boolean hasCustomModifiers = false;
 
             if (modifiers != null && !modifiers.modifiers().isEmpty()) {
                 for (ItemAttributeModifiers.Entry entry : modifiers.modifiers()) {
-                    // Match against the slot group for this slot
                     if (entry.slot().test(slot)) {
                         var attr = entry.attribute();
                         double amount = entry.modifier().amount();
@@ -213,7 +208,6 @@ public class FittingRoomScreen extends Screen {
                 }
             }
 
-            // 2. Fallback to default vanilla stats if no custom modifiers were applied
             if (!hasCustomModifiers) {
                 if (stack.is(Items.DIAMOND_HELMET)) { this.totalArmor += 3; this.totalToughness += 2.0f; }
                 else if (stack.is(Items.NETHERITE_HELMET)) { this.totalArmor += 3; this.totalToughness += 3.0f; }
@@ -231,7 +225,6 @@ public class FittingRoomScreen extends Screen {
                 }
             }
 
-            // 3. Inspect custom traits / lore
             ItemLore lore = stack.get(DataComponents.LORE);
             if (lore != null) {
                 for (Component line : lore.lines()) {
@@ -242,7 +235,6 @@ public class FittingRoomScreen extends Screen {
                 }
             }
 
-            // Offhand specials
             if (slot == EquipmentSlot.OFFHAND) {
                 if (stack.is(Items.SHIELD)) {
                     this.equippedTraits.add(Component.literal("§7• §fProjectile Deflection"));
@@ -265,13 +257,11 @@ public class FittingRoomScreen extends Screen {
         int panelX = (this.width - panelW) / 2;
         int panelY = (this.height - panelH) / 2 - 10;
 
-        // Viewport Frame
         int mannequinBoxX = panelX + 36;
         int mannequinBoxY = panelY + 36;
         int mannequinBoxW = 110;
         int mannequinBoxH = 140;
 
-        // --- GLFW Direct Drag Tracking with Inertia ---
         long windowHandle = this.minecraft.getWindow().handle();
         boolean isMouseDown = GLFW.glfwGetMouseButton(windowHandle, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
 
@@ -303,13 +293,11 @@ public class FittingRoomScreen extends Screen {
                 isDraggingModel = false;
             }
 
-            // Apply friction damping to manual throw
             if (Math.abs(this.yawVelocity) > 0.05f) {
                 this.playerYaw = (this.playerYaw + this.yawVelocity) % 360.0f;
                 this.yawVelocity *= 0.88f;
             } else {
                 this.yawVelocity = 0.0f;
-                // Idle turntable spin when auto-rotate is active
                 if (this.autoRotate) {
                     this.playerYaw = (this.playerYaw + 0.45f) % 360.0f;
                 }
@@ -324,19 +312,15 @@ public class FittingRoomScreen extends Screen {
         }
         wasMouseDown = isMouseDown;
 
-        // 1. Draw Panel Background & Border FIRST so it doesn't cover widgets
         graphics.fill(panelX, panelY, panelX + panelW, panelY + panelH, 0xFF14071D);
         graphics.outline(panelX, panelY, panelW, panelH, 0xFF4A1A5E);
 
-        // 2. Header Titles
         graphics.centeredText(this.font, this.title, this.width / 2, panelY + 10, 0xFFFFAA00);
         graphics.centeredText(this.font, Component.literal("§7(Drag inside frame to rotate • Click slots to cycle items)"), this.width / 2, panelY + 22, 0xFFAAAAAA);
 
-        // 3. Mannequin Box Viewport Background & Outline
         graphics.fill(mannequinBoxX, mannequinBoxY, mannequinBoxX + mannequinBoxW, mannequinBoxY + mannequinBoxH, 0xFF0D0414);
         graphics.outline(mannequinBoxX, mannequinBoxY, mannequinBoxW, mannequinBoxH, isDraggingModel ? 0xFFBA68C8 : 0xFF351242);
 
-        // 4. Render 3D Mannequin
         if (this.dummy != null) {
             renderFreeOrbitDummy(
                     graphics,
@@ -348,10 +332,8 @@ public class FittingRoomScreen extends Screen {
             );
         }
 
-        // 5. Render Screen Widgets (Slot Buttons, Reset View, Back) ON TOP of background
         super.extractRenderState(graphics, mouseX, mouseY, a);
 
-        // 6. Stats Preview Panel (Right Side)
         int statsX = panelX + 176;
         int statsY = panelY + 45;
 
@@ -371,7 +353,6 @@ public class FittingRoomScreen extends Screen {
             graphics.text(this.font, trait, statsX, traitsY + lineOffset, 0xFFFFFFFF);
             lineOffset += 12;
         }
-
     }
 
     private void renderFreeOrbitDummy(GuiGraphicsExtractor graphics, int x0, int y0, int x1, int y1, int size) {
@@ -405,9 +386,6 @@ public class FittingRoomScreen extends Screen {
         graphics.entity(renderState, size, translation, rotation, xRotation, x0, y0, x1, y1);
     }
 
-    /**
-     * Reads the player's active equipment directly from their live inventory.
-     */
     private void syncFromPlayerInventory() {
         Minecraft client = Minecraft.getInstance();
         if (client.player == null) return;
@@ -419,7 +397,44 @@ public class FittingRoomScreen extends Screen {
                 this.dummy.setPreviewSlot(widget.getSlot(), equipped.copy());
             }
         }
+        client.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.ARMOR_EQUIP_NETHERITE, 1.0f));
         recalculateStats();
+    }
+
+    private void playEquipSound(EquipmentSlot slot, ItemStack stack) {
+        Minecraft client = Minecraft.getInstance();
+        if (client.level == null) return;
+
+        net.minecraft.core.Holder<SoundEvent> soundHolder = null;
+
+        if (stack.isEmpty()) {
+            soundHolder = SoundEvents.ARMOR_EQUIP_GENERIC;
+        } else if (slot == EquipmentSlot.MAINHAND) {
+            soundHolder = SoundEvents.ARMOR_EQUIP_IRON;
+        } else if (slot == EquipmentSlot.OFFHAND) {
+            soundHolder = SoundEvents.ARMOR_EQUIP_GENERIC;
+        } else {
+            // Check item-specific equip sound holder if available
+            soundHolder = SoundEvents.ARMOR_EQUIP_NETHERITE;
+        }
+
+        if (soundHolder != null) {
+            client.getSoundManager().play(SimpleSoundInstance.forUI(soundHolder.value(), 1.0f));
+        }
+    }
+
+    private void openSlotPicker(PreviewSlotWidget widget) {
+        if (this.minecraft == null) return;
+
+        this.minecraft.setScreen(new ItemCatalogPickerScreen(this, widget.getSlot(), selectedStack -> {
+            ItemStack copy = selectedStack.copy();
+            widget.setItemStack(copy);
+            if (this.dummy != null) {
+                this.dummy.setPreviewSlot(widget.getSlot(), copy);
+            }
+            recalculateStats();
+            playEquipSound(widget.getSlot(), copy);
+        }));
     }
 
     @Override
