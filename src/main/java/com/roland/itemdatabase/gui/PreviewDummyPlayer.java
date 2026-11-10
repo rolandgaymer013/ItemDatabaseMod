@@ -17,7 +17,9 @@ public class PreviewDummyPlayer extends RemotePlayer {
     }
 
     public void setPreviewSlot(EquipmentSlot slot, ItemStack stack) {
-        this.setItemSlot(slot, stack);
+        this.setItemSlot(slot, stack.copy());
+        // Force the equipment tracking map to invalidate internal render state caches
+        this.setSharedFlag(0, false);
     }
 
     public void clearAllSlots() {

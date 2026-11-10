@@ -231,4 +231,30 @@ public record ItemEntry(
         }
         return net.minecraft.network.chat.Component.literal(this.itemName.replace('&', '§'));
     }
+
+    /**
+     * Resolves target EquipmentSlot using assigned armor tags.
+     * @return EquipmentSlot (HEAD, CHEST, LEGS, FEET), or null if not wearable armor.
+     */
+    public net.minecraft.world.entity.EquipmentSlot getTargetEquipmentSlot() {
+        if (this.tags == null || this.tags.isEmpty()) {
+            return null;
+        }
+        for (String tag : this.tags) {
+            String t = tag.trim().toLowerCase();
+            if (t.equals("hat") || t.equals("helmet")) {
+                return net.minecraft.world.entity.EquipmentSlot.HEAD;
+            }
+            if (t.equals("chestplate") || t.equals("elytra")) {
+                return net.minecraft.world.entity.EquipmentSlot.CHEST;
+            }
+            if (t.equals("leggings")) {
+                return net.minecraft.world.entity.EquipmentSlot.LEGS;
+            }
+            if (t.equals("boots")) {
+                return net.minecraft.world.entity.EquipmentSlot.FEET;
+            }
+        }
+        return null;
+    }
 }

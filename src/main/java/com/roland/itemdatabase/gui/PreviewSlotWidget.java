@@ -1,40 +1,47 @@
 package com.roland.itemdatabase.gui;
 
+import com.roland.itemdatabase.data.AnimatedTexture;
+import com.roland.itemdatabase.data.DatabaseManager;
+import com.roland.itemdatabase.data.ItemEntry;
+import com.roland.itemdatabase.data.RawDataParser;
+import com.roland.itemdatabase.data.TextureDownloader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
-import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
-import net.minecraft.client.input.MouseButtonEvent;
-import net.minecraft.network.chat.CommonComponents;
+import net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipComponent;
+import net.minecraft.client.gui.screens.inventory.tooltip.DefaultTooltipPositioner;
+import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.client.renderer.RenderPipelines;
-import org.lwjgl.glfw.GLFW;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
 
 public class PreviewSlotWidget extends AbstractWidget {
 
-    public static final Identifier EMPTY_SLOT_HELMET = Identifier.fromNamespaceAndPath("minecraft", "container/slot/helmet");
-    public static final Identifier EMPTY_SLOT_CHESTPLATE = Identifier.fromNamespaceAndPath("minecraft", "container/slot/chestplate");
-    public static final Identifier EMPTY_SLOT_LEGGINGS = Identifier.fromNamespaceAndPath("minecraft", "container/slot/leggings");
-    public static final Identifier EMPTY_SLOT_BOOTS = Identifier.fromNamespaceAndPath("minecraft", "container/slot/boots");
-    public static final Identifier EMPTY_SLOT_SHIELD = Identifier.fromNamespaceAndPath("minecraft", "container/slot/shield");
-    public static final Identifier EMPTY_SLOT_SWORD = Identifier.fromNamespaceAndPath("minecraft", "container/slot/sword");
-
     private final EquipmentSlot slot;
-    private ItemStack itemStack;
-    private final Consumer<PreviewSlotWidget> onClickAction;
+    private final Consumer<PreviewSlotWidget> onClick;
+    private ItemStack itemStack = ItemStack.EMPTY;
+    private ItemEntry currentEntry;
 
-    public PreviewSlotWidget(int x, int y, EquipmentSlot slot, ItemStack defaultStack, Consumer<PreviewSlotWidget> onClickAction) {
+    public PreviewSlotWidget(int x, int y, EquipmentSlot slot, ItemStack initialItem, ItemEntry initialEntry, Consumer<PreviewSlotWidget> onClick) {
         super(x, y, 20, 20, Component.literal(slot.getName()));
         this.slot = slot;
-        this.itemStack = defaultStack;
-        this.onClickAction = onClickAction;
-        updateItemTooltip();
+        this.itemStack = initialItem != null ? initialItem : ItemStack.EMPTY;
+        this.currentEntry = initialEntry;
+        this.onClick = onClick;
+    }
+
+    public PreviewSlotWidget(int x, int y, EquipmentSlot slot, ItemStack initialItem, Consumer<PreviewSlotWidget> onClick) {
+        this(x, y, slot, initialItem, null, onClick);
+    }
+
+    public PreviewSlotWidget(int x, int y, EquipmentSlot slot, Consumer<PreviewSlotWidget> onClick) {
+        this(x, y, slot, ItemStack.EMPTY, null, onClick);
     }
 
     public EquipmentSlot getSlot() {
@@ -45,87 +52,155 @@ public class PreviewSlotWidget extends AbstractWidget {
         return this.itemStack;
     }
 
-    public void setItemStack(ItemStack stack) {
-        this.itemStack = stack;
-        updateItemTooltip();
+    public ItemEntry getCurrentEntry() {
+        return this.currentEntry;
     }
 
-    private void updateItemTooltip() {
-        if (this.itemStack == null || this.itemStack.isEmpty()) {
-            this.setTooltip(null);
-            return;
-        }
+    public void setItem(ItemStack stack, ItemEntry entry) {
+        this.itemStack = stack != null ? stack : ItemStack.EMPTY;
+        this.currentEntry = entry;
+    }
 
-        Minecraft client = Minecraft.getInstance();
-        var lines = net.minecraft.client.gui.screens.Screen.getTooltipFromItem(client, this.itemStack);
+    public ItemEntry getItemEntry() {
+        return this.currentEntry;
+    }
 
-        if (lines.isEmpty()) {
-            this.setTooltip(null);
-            return;
-        }
-
-        Component combined = lines.get(0);
-        for (int i = 1; i < lines.size(); i++) {
-            combined = Component.empty().append(combined).append(CommonComponents.NEW_LINE).append(lines.get(i));
-        }
-
-        this.setTooltip(Tooltip.create(combined));
+    public void setItemStack(ItemStack stack) {
+        setItem(stack, null);
     }
 
     @Override
-    public boolean mouseClicked(MouseButtonEvent event, boolean bl) {
-        if (this.active && this.visible && this.isHovered()) {
-            if (event.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
-                this.playDownSound(Minecraft.getInstance().getSoundManager());
-                if (this.onClickAction != null) {
-                    this.onClickAction.accept(this);
-                }
-                return true;
+    public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean bl) {
+        if (event.button() == 0 && this.isHovered()) {
+            if (this.onClick != null) {
+                this.onClick.accept(this);
             }
+            return true;
         }
         return super.mouseClicked(event, bl);
     }
 
     @Override
-    protected void extractWidgetRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
-        // Slot background box
-        graphics.fill(this.getX(), this.getY(), this.getX() + this.width, this.getY() + this.height, 0xFF0D0414);
-
-        // Slot border: highlight if hovered
-        int borderColor = this.isHovered() ? 0xFFBA68C8 : 0xFF4A1A5E;
-        graphics.outline(this.getX(), this.getY(), this.width, this.height, borderColor);
-
-        // Render equipped item icon or translucent ghost silhouette
-        if (this.itemStack != null && !this.itemStack.isEmpty()) {
-            graphics.item(this.itemStack, this.getX() + 2, this.getY() + 2);
-        } else {
-            if (this.slot == EquipmentSlot.MAINHAND) {
-                // Ghost sword icon fallback
-                graphics.item(new ItemStack(net.minecraft.world.item.Items.IRON_SWORD), this.getX() + 2, this.getY() + 2);
-                // Dark tint overlay to make it look like a ghost silhouette
-                graphics.fill(this.getX() + 2, this.getY() + 2, this.getX() + 18, this.getY() + 18, 0x990D0414);
-            } else {
-                Identifier emptyIcon = getEmptySlotTexture();
-                if (emptyIcon != null) {
-                    graphics.blitSprite(RenderPipelines.GUI_TEXTURED, emptyIcon, this.getX() + 2, this.getY() + 2, 16, 16);
-                }
-            }
-        }
+    protected void updateWidgetNarration(NarrationElementOutput output) {
+        defaultButtonNarrationText(output);
     }
 
     @Override
-    protected void updateWidgetNarration(NarrationElementOutput narrationElementOutput) {
-        this.defaultButtonNarrationText(narrationElementOutput);
+    protected void extractWidgetRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
+        int x = this.getX();
+        int y = this.getY();
+        boolean hovered = this.isHovered();
+
+        int bg = hovered ? 0xDD2A1038 : 0xAA14071D;
+        int border = hovered ? 0xFFBA68C8 : 0xFF4A1A5E;
+
+        graphics.fill(x, y, x + this.width, y + this.height, bg);
+        graphics.outline(x, y, this.width, this.height, border);
+
+        if (!this.itemStack.isEmpty()) {
+            boolean renderedCustom = false;
+
+            // Fallback lookup by item name if entry wasn't passed directly
+            if (this.currentEntry == null) {
+                this.currentEntry = DatabaseManager.findItemByName(this.itemStack.getHoverName().getString());
+            }
+
+            if (this.currentEntry != null && this.currentEntry.iconUrl() != null && !this.currentEntry.iconUrl().isBlank()) {
+                String cacheKey = (this.currentEntry.isCrateItem() ? "crate_" : "misc_") + this.currentEntry.id();
+                Identifier spriteLoc = TextureDownloader.getOrLoadTexture(this.currentEntry.iconUrl(), cacheKey);
+                AnimatedTexture anim = TextureDownloader.getTextureInfo(cacheKey);
+
+                if (spriteLoc != null) {
+                    int maxDim = 16;
+                    int imgW = (anim != null && anim.width() > 0) ? anim.width() : maxDim;
+                    int imgH = (anim != null && anim.height() > 0) ? anim.height() : maxDim;
+
+                    float scale = Math.min((float) maxDim / imgW, (float) maxDim / imgH);
+                    int renderW = Math.max(1, Math.round(imgW * scale));
+                    int renderH = Math.max(1, Math.round(imgH * scale));
+
+                    int spriteX = x + 2 + (maxDim - renderW) / 2;
+                    int spriteY = y + 2 + (maxDim - renderH) / 2;
+
+                    graphics.blit(
+                            RenderPipelines.GUI_TEXTURED,
+                            spriteLoc,
+                            spriteX,
+                            spriteY,
+                            0.0F,
+                            0.0F,
+                            renderW,
+                            renderH,
+                            renderW,
+                            renderH
+                    );
+                    renderedCustom = true;
+                }
+            }
+
+            if (!renderedCustom) {
+                graphics.item(this.itemStack, x + 2, y + 2);
+            }
+        } else {
+            String icon = switch (this.slot) {
+                case HEAD -> "⛊";
+                case CHEST -> "👕";
+                case LEGS -> "👖";
+                case FEET -> "👢";
+                case MAINHAND -> "⚔";
+                case OFFHAND -> "🛡";
+                default -> "•";
+            };
+            graphics.centeredText(Minecraft.getInstance().font, Component.literal("§8" + icon), x + (this.width / 2), y + 6, 0xFF666666);
+        }
     }
 
-    public Identifier getEmptySlotTexture() {
-        return switch (this.slot) {
-            case HEAD -> EMPTY_SLOT_HELMET;
-            case CHEST -> EMPTY_SLOT_CHESTPLATE;
-            case LEGS -> EMPTY_SLOT_LEGGINGS;
-            case FEET -> EMPTY_SLOT_BOOTS;
-            case OFFHAND -> EMPTY_SLOT_SHIELD;
-            default -> null;
-        };
+    public void renderTooltip(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
+        int x = this.getX();
+        int y = this.getY();
+        boolean hovered = mouseX >= x && mouseX <= x + this.width && mouseY >= y && mouseY <= y + this.height;
+        if (!hovered || this.itemStack == null || this.itemStack.isEmpty()) {
+            return;
+        }
+
+        // Ensure currentEntry is found if it was equipped without one
+        if (this.currentEntry == null) {
+            this.currentEntry = DatabaseManager.findItemByName(this.itemStack.getHoverName().getString());
+        }
+
+        List<Component> tooltipLines = new ArrayList<>();
+
+        if (this.currentEntry != null && this.currentEntry.rawData() != null && !this.currentEntry.rawData().isBlank()) {
+            // 1. Custom styled name
+            Component titleComp = RawDataParser.parseCustomName(this.currentEntry.rawData(), this.currentEntry.itemName());
+            tooltipLines.add(titleComp);
+
+            // 2. Enchantments
+            tooltipLines.addAll(RawDataParser.parseEnchantments(this.currentEntry.rawData()));
+
+            // 3. Full Lore lines
+            tooltipLines.addAll(RawDataParser.parseLore(this.currentEntry.rawData()));
+        } else {
+            // Fallback for vanilla or copied inventory gear
+            tooltipLines.add(this.itemStack.getHoverName());
+            var lore = this.itemStack.get(net.minecraft.core.component.DataComponents.LORE);
+            if (lore != null) {
+                tooltipLines.addAll(lore.lines());
+            }
+        }
+
+        List<ClientTooltipComponent> components = tooltipLines.stream()
+                .map(Component::getVisualOrderText)
+                .map(ClientTooltipComponent::create)
+                .toList();
+
+        graphics.tooltip(
+                Minecraft.getInstance().font,
+                components,
+                mouseX,
+                mouseY,
+                DefaultTooltipPositioner.INSTANCE,
+                null
+        );
     }
 }
