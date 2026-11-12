@@ -243,6 +243,16 @@ public class ItemDatabaseScreen extends Screen {
         return items.get(currentIndex);
     }
 
+    private void openFittingRoom() {
+        if (this.minecraft == null) return;
+        FittingRoomScreen fittingRoom = new FittingRoomScreen(this);
+        ItemEntry cur = getCurrentItem();
+        if (cur != null && cur.getTargetEquipmentSlot() != null) {
+            fittingRoom.equipItemFromCatalog(cur);
+        }
+        this.minecraft.setScreen(fittingRoom);
+    }
+
     @Override
     public boolean isPauseScreen() {
         return false;
@@ -366,6 +376,21 @@ public class ItemDatabaseScreen extends Screen {
                     CollectionManager.toggleWishlist(cur);
                     return true;
                 }
+
+                // Clicked [F] Fitting Room in the footer bar
+                int navY = panelHeight - 24;
+                String catLabel = (currentCategory == ViewCategory.CRATES) ? "§6[Tab] §7Misc" : "§6[Tab] §7Crates";
+                String topFooter = "§e[A/D] §7Item   " + catLabel + "   §e[Drag] §7Move   §d[F] §7Fitting Room";
+                int footerTotalW = this.font.width(topFooter);
+                int footerStartX = (panelWidth - footerTotalW) / 2;
+                int fitLabelW = this.font.width("§d[F] §7Fitting Room");
+                int fitStartX = footerStartX + footerTotalW - fitLabelW;
+
+                if (localMouseX >= fitStartX - 2 && localMouseX <= fitStartX + fitLabelW + 2
+                        && localMouseY >= navY + 1 && localMouseY <= navY + 11) {
+                    openFittingRoom();
+                    return true;
+                }
             }
         }
         return super.mouseClicked(event, bl);
@@ -442,6 +467,12 @@ public class ItemDatabaseScreen extends Screen {
                 CollectionManager.toggleWishlist(current);
                 return true;
             }
+        }
+
+        // Open Fitting Room with F
+        if (keyCode == GLFW.GLFW_KEY_F) {
+            openFittingRoom();
+            return true;
         }
 
         return super.keyPressed(event);
@@ -808,7 +839,7 @@ public class ItemDatabaseScreen extends Screen {
 
             graphics.centeredText(
                     this.font,
-                    Component.literal("§e[A/D] §7Item   " + catLabel + "   §e[Drag] §7Move"),
+                    Component.literal("§e[A/D] §7Item   " + catLabel + "   §e[Drag] §7Move   §d[F] §7Fitting Room"),
                     panelWidth / 2,
                     navY + 3,
                     0xFFFFFFFF

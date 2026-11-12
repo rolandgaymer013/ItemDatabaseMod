@@ -68,12 +68,6 @@ public class ItemDatabaseClient implements ClientModInitializer {
                 KeyMapping.Category.MISC
         ));
 
-        testFittingRoomKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
-                "key.itemdatabase.fitting_test",
-                InputConstants.Type.KEYSYM,
-                GLFW.GLFW_KEY_H,
-                KeyMapping.Category.MISC
-        ));
 
         // 5. Global tick listener: Open database GUI or Fitting Room test screen
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
@@ -91,9 +85,6 @@ public class ItemDatabaseClient implements ClientModInitializer {
                 }
             }
 
-            while (testFittingRoomKey.consumeClick()) {
-                client.setScreen(new FittingRoomScreen(client.screen));
-            }
         });
 
         // 6. Screen keyboard listener: Trigger container batch upload inside chests/shulkers/barrels

@@ -2,6 +2,7 @@ package com.roland.itemdatabase.gui;
 
 import com.roland.itemdatabase.data.ItemEntry;
 import com.roland.itemdatabase.data.RawDataParser;
+import com.roland.itemdatabase.config.ModConfig;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
@@ -31,6 +32,16 @@ import java.util.List;
 import java.util.Map;
 
 public class FittingRoomScreen extends Screen {
+
+    private int getPanelX(int panelW) {
+        int base = (this.width - panelW) / 2 + ModConfig.get().cardOffsetX;
+        return Mth.clamp(base, 8, Math.max(8, this.width - panelW - 8));
+    }
+
+    private int getPanelY(int panelH) {
+        int base = (this.height - panelH) / 2 - 10 + ModConfig.get().cardOffsetY;
+        return Mth.clamp(base, 8, Math.max(8, this.height - panelH - 34));
+    }
 
     private final Map<EquipmentSlot, ItemStack> currentLoadout = new EnumMap<>(EquipmentSlot.class);
     private final Map<EquipmentSlot, ItemEntry> currentEntries = new EnumMap<>(EquipmentSlot.class);
@@ -80,6 +91,18 @@ public class FittingRoomScreen extends Screen {
         }
     }
 
+    public void equipItemFromCatalog(ItemEntry entry) {
+        if (entry == null) return;
+        EquipmentSlot slot = entry.getTargetEquipmentSlot();
+        if (slot == null) return;
+
+        ItemStack stack = RawDataParser.parseItemStack(entry);
+        if (!stack.isEmpty()) {
+            this.currentLoadout.put(slot, stack.copy());
+            this.currentEntries.put(slot, entry);
+        }
+    }
+
     @Override
     protected void init() {
         super.init();
@@ -98,8 +121,8 @@ public class FittingRoomScreen extends Screen {
 
         int panelW = 390;
         int panelH = 190;
-        int panelX = (this.width - panelW) / 2;
-        int panelY = (this.height - panelH) / 2 - 10;
+        int panelX = getPanelX(panelW);
+        int panelY = getPanelY(panelH);
 
         int mannequinBoxX = panelX + 36;
         int mannequinBoxY = panelY + 36;
@@ -403,8 +426,8 @@ public class FittingRoomScreen extends Screen {
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
         int panelW = 390;
         int panelH = 190;
-        int panelX = (this.width - panelW) / 2;
-        int panelY = (this.height - panelH) / 2 - 10;
+        int panelX = getPanelX(panelW);
+        int panelY = getPanelY(panelH);
 
         int mannequinBoxX = panelX + 36;
         int mannequinBoxY = panelY + 36;
@@ -464,8 +487,8 @@ public class FittingRoomScreen extends Screen {
         graphics.fill(panelX, panelY, panelX + panelW, panelY + panelH, 0xFF14071D);
         graphics.outline(panelX, panelY, panelW, panelH, 0xFF4A1A5E);
 
-        graphics.centeredText(this.font, this.title, this.width / 2, panelY + 10, 0xFFFFAA00);
-        graphics.centeredText(this.font, Component.literal("§7(Drag inside frame to rotate • Click slots to change gear)"), this.width / 2, panelY + 22, 0xFFAAAAAA);
+        graphics.centeredText(this.font, this.title, panelX + (panelW / 2), panelY + 10, 0xFFFFAA00);
+        graphics.centeredText(this.font, Component.literal("§7(Drag inside frame to rotate • Click slots to change gear)"), panelX + (panelW / 2), panelY + 22, 0xFFAAAAAA);
 
         graphics.fill(mannequinBoxX, mannequinBoxY, mannequinBoxX + mannequinBoxW, mannequinBoxY + mannequinBoxH, 0xFF0D0414);
         graphics.outline(mannequinBoxX, mannequinBoxY, mannequinBoxW, mannequinBoxH, isDraggingModel ? 0xFFBA68C8 : 0xFF351242);
@@ -680,8 +703,8 @@ public class FittingRoomScreen extends Screen {
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
         int panelW = 390;
         int panelH = 190;
-        int panelX = (this.width - panelW) / 2;
-        int panelY = (this.height - panelH) / 2 - 10;
+        int panelX = getPanelX(panelW);
+        int panelY = getPanelY(panelH);
         int statsX = panelX + 208;
         int traitsY = panelY + 36 + 74;
 
@@ -755,4 +778,6 @@ public class FittingRoomScreen extends Screen {
         }
         return sb.toString();
     }
+
+
 }

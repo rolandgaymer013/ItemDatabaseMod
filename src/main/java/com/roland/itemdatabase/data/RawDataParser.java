@@ -209,7 +209,27 @@ public class RawDataParser {
                     && existingEq.assetId().isPresent()
                     && !existingEq.assetId().get().identifier().getNamespace().equals("minecraft");
 
-            if (!isCustomHeadModel && !hasCustomAssetAlready) {
+            // Check if raw JSON defines minecraft:equippable with slot:"head" and NO asset_id (3D Blockbench hats/helmets)
+            boolean hasExplicitHeadSlotWithoutAsset = false;
+            if (root.has("components") && root.get("components").isJsonObject()) {
+                JsonObject compObj = root.getAsJsonObject("components");
+                JsonElement eqElem = compObj.has("minecraft:equippable")
+                        ? compObj.get("minecraft:equippable")
+                        : compObj.get("equippable");
+                if (eqElem != null && eqElem.isJsonObject()) {
+                    JsonObject eqObj = eqElem.getAsJsonObject();
+                    if (eqObj.has("slot") && "head".equalsIgnoreCase(eqObj.get("slot").getAsString()) && !eqObj.has("asset_id")) {
+                        hasExplicitHeadSlotWithoutAsset = true;
+                    }
+                }
+            }
+
+            if (hasExplicitHeadSlotWithoutAsset) {
+                Identifier dispatchItemModel = resolveDispatchItemModel(stack);
+                if (dispatchItemModel != null) {
+                    stack.set(DataComponents.ITEM_MODEL, dispatchItemModel);
+                }
+            } else if (!isCustomHeadModel && !hasCustomAssetAlready) {
                 EquipmentSlot slot = explicitSlot != null ? explicitSlot
                         : (existingEq != null ? existingEq.slot() : null);
 
@@ -228,7 +248,6 @@ public class RawDataParser {
                     if (!customName.getString().isBlank()) rawNames.add(customName.getString());
                     if (cleanNameHint != null && !cleanNameHint.isBlank()) rawNames.add(cleanNameHint);
 
-                    // Also check PublicBukkitValues -> executableitems:ei-id (e.g., "BLOSSOM_PRAETORIANBOOTS")
                     if (root.has("components") && root.getAsJsonObject("components").has("minecraft:custom_data")) {
                         JsonObject customData = root.getAsJsonObject("components").getAsJsonObject("minecraft:custom_data");
                         if (customData.has("PublicBukkitValues") && customData.getAsJsonObject("PublicBukkitValues").has("executableitems:ei-id")) {
@@ -237,46 +256,82 @@ public class RawDataParser {
                         }
                     }
 
+                    Identifier resolvedItemModel = resolveModelFromCmd(stack);
                     Identifier matchedAsset = null;
-                    Identifier resolvedItemModel = null;
 
-                    // 1. Automatic lookup via Resource Pack items/*.json CustomModelData table (100% exact, zero manual aliases)
-                    resolvedItemModel = resolveModelFromCmd(stack);
-                    if (resolvedItemModel != null) {
-                        matchedAsset = findEquipmentAssetInPack(resolvedItemModel.getNamespace());
-                    }
-
-                    // 2. Fallback to name / ei-id matching if no CMD match was found
-                    if (matchedAsset == null) {
-                        for (String candidateName : rawNames) {
-                            String cleanSetKey = sanitizeLegacyAmpersands(candidateName.toLowerCase())
-                                    .replaceAll("§[0-9a-fk-or]", "")
-                                    .replace("chestplate", "")
-                                    .replace("leggings", "")
-                                    .replace("helmet", "")
-                                    .replace("boots", "")
-                                    .replace("elytra", "")
-                                    .replace("hat", "")
-                                    .replaceAll("[^a-z0-9]", "")
-                                    .trim();
-
-                            if (!cleanSetKey.isBlank()) {
-                                matchedAsset = findEquipmentAssetInPack(cleanSetKey);
-                                if (matchedAsset != null) break;
+                    if (stack.is(Items.ELYTRA)) {
+                        // Only override Elytra equippable if a dedicated *_elytra equipment asset exists in the pack
+                        if (resolvedItemModel != null) {
+                            matchedAsset = findElytraAssetInPack(resolvedItemModel.getNamespace());
+                        }
+                        if (matchedAsset == null) {
+                            for (String candidateName : rawNames) {
+                                String cleanSetKey = sanitizeLegacyAmpersands(candidateName.toLowerCase())
+                                        .replaceAll("§[0-9a-fk-or]", "")
+                                        .replace("elytra", "")
+                                        .replaceAll("[^a-z0-9]", "")
+                                        .trim();
+                                if (!cleanSetKey.isBlank()) {
+                                    matchedAsset = findElytraAssetInPack(cleanSetKey);
+                                    if (matchedAsset != null) break;
+                                }
                             }
                         }
-                    }
 
-                    if (matchedAsset != null) {
-                        stack.remove(DataComponents.DYED_COLOR);
-                        var assetKey = ResourceKey.create(EquipmentAssets.ROOT_ID, matchedAsset);
-                        var equippable = Equippable.builder(slot)
-                                .setAsset(assetKey)
-                                .build();
-                        stack.set(DataComponents.EQUIPPABLE, equippable);
-
+                        if (matchedAsset != null) {
+                            var assetKey = ResourceKey.create(EquipmentAssets.ROOT_ID, matchedAsset);
+                            stack.set(DataComponents.EQUIPPABLE, Equippable.builder(EquipmentSlot.CHEST).setAsset(assetKey).build());
+                        }
                         if (resolvedItemModel != null) {
                             stack.set(DataComponents.ITEM_MODEL, resolvedItemModel);
+                        }
+                    } else {
+                        // Standard Armor (Helmet, Chestplate, Leggings, Boots)
+                        if (resolvedItemModel != null) {
+                            matchedAsset = findEquipmentAssetInPack(resolvedItemModel.getNamespace());
+                        }
+
+                        if (matchedAsset == null) {
+                            for (String candidateName : rawNames) {
+                                String cleanSetKey = sanitizeLegacyAmpersands(candidateName.toLowerCase())
+                                        .replaceAll("§[0-9a-fk-or]", "")
+                                        .replace("chestplate", "")
+                                        .replace("leggings", "")
+                                        .replace("helmet", "")
+                                        .replace("boots", "")
+                                        .replace("hat", "")
+                                        .replaceAll("[^a-z0-9]", "")
+                                        .trim();
+
+                                if (!cleanSetKey.isBlank()) {
+                                    matchedAsset = findEquipmentAssetInPack(cleanSetKey);
+                                    if (matchedAsset != null) break;
+                                }
+                            }
+                        }
+
+                        // If this is a 3D Blockbench helmet (model JSON has "elements"), render its 3D ITEM_MODEL on the head instead of a 2D armor asset
+                        if (slot == EquipmentSlot.HEAD && resolvedItemModel != null && is3DBlockbenchModel(resolvedItemModel)) {
+                            stack.remove(DataComponents.DYED_COLOR);
+                            stack.set(DataComponents.EQUIPPABLE, Equippable.builder(EquipmentSlot.HEAD).build());
+                            Identifier dispatchItemModel = resolveDispatchItemModel(stack);
+                            if (dispatchItemModel != null) {
+                                stack.set(DataComponents.ITEM_MODEL, dispatchItemModel);
+                            }
+                        } else if (matchedAsset != null) {
+                            stack.remove(DataComponents.DYED_COLOR);
+                            var assetKey = ResourceKey.create(EquipmentAssets.ROOT_ID, matchedAsset);
+                            var equippable = Equippable.builder(slot)
+                                    .setAsset(assetKey)
+                                    .build();
+                            stack.set(DataComponents.EQUIPPABLE, equippable);
+
+                            if (resolvedItemModel != null) {
+                                Identifier dispatchItemModel = resolveDispatchItemModel(stack);
+                                if (dispatchItemModel != null) {
+                                    stack.set(DataComponents.ITEM_MODEL, dispatchItemModel);
+                                }
+                            }
                         }
                     }
                 }
@@ -328,6 +383,43 @@ public class RawDataParser {
         }
 
         return null;
+    }
+
+    private static Identifier findElytraAssetInPack(String setKey) {
+        if (setKey == null || setKey.isBlank()) return null;
+        var rm = Minecraft.getInstance().getResourceManager();
+        var found = rm.listResources("equipment", id -> id.getPath().endsWith(".json") && id.getPath().contains("elytra"));
+
+        for (Identifier foundId : found.keySet()) {
+            String ns = foundId.getNamespace();
+            if (ns.equals("minecraft")) continue;
+            String path = foundId.getPath();
+            String assetName = path.substring("equipment/".length(), path.length() - ".json".length());
+            String normNs = ns.replace("_", "");
+            String normAsset = assetName.replace("_", "");
+            if (normNs.contains(setKey) || setKey.contains(normNs) || normAsset.contains(setKey)) {
+                return Identifier.fromNamespaceAndPath(ns, assetName);
+            }
+        }
+        return null;
+    }
+
+    private static boolean is3DBlockbenchModel(Identifier modelId) {
+        if (modelId == null) return false;
+        try {
+            var rm = Minecraft.getInstance().getResourceManager();
+            Identifier jsonLoc = Identifier.fromNamespaceAndPath(modelId.getNamespace(), "models/" + modelId.getPath() + ".json");
+            var res = rm.getResource(jsonLoc);
+            if (res.isPresent()) {
+                try (var reader = res.get().openAsReader()) {
+                    JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
+                    if (root.has("elements") && root.get("elements").isJsonArray() && !root.getAsJsonArray("elements").isEmpty()) {
+                        return true;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return false;
     }
 
     /**
@@ -652,6 +744,37 @@ public class RawDataParser {
             }
         }
 
+        return null;
+    }
+
+    private static Identifier resolveDispatchItemModel(ItemStack stack) {
+        if (cachedCmdModelMap == null) {
+            resolveModelFromCmd(stack);
+        }
+        String baseItemPath = BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
+        CustomModelData cmd = stack.get(DataComponents.CUSTOM_MODEL_DATA);
+        if (cmd != null && !cmd.floats().isEmpty()) {
+            int cmdInt = Math.round(cmd.floats().getFirst());
+
+            if (cachedCmdModelMap.containsKey(baseItemPath + ":" + cmdInt)) {
+                return Identifier.withDefaultNamespace(baseItemPath);
+            }
+
+            String slotSuffix = null;
+            if (baseItemPath.endsWith("_helmet")) slotSuffix = "_helmet";
+            else if (baseItemPath.endsWith("_chestplate")) slotSuffix = "_chestplate";
+            else if (baseItemPath.endsWith("_leggings")) slotSuffix = "_leggings";
+            else if (baseItemPath.endsWith("_boots")) slotSuffix = "_boots";
+
+            if (slotSuffix != null) {
+                for (String tier : List.of("netherite", "diamond", "iron", "golden", "chainmail", "leather")) {
+                    String candidate = tier + slotSuffix;
+                    if (cachedCmdModelMap.containsKey(candidate + ":" + cmdInt)) {
+                        return Identifier.withDefaultNamespace(candidate);
+                    }
+                }
+            }
+        }
         return null;
     }
 
