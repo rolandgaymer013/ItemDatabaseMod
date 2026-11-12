@@ -37,20 +37,25 @@ import java.util.Map;
 public class RawDataParser {
 
     private static final Pattern HEX_COLOR_PATTERN = Pattern.compile("&#([A-Fa-f0-9]{6})");
+    private static Map<String, Identifier> cachedEquipmentAssets = null;
+    private static final Map<String, ItemStack> PARSED_STACK_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
+    private static Map<String, Identifier> cachedCmdModelMap = null;
 
     /**
      * Parses a raw JSON string using ItemEntry metadata for slot resolution and asset mapping.
      */
     public static ItemStack parseItemStack(ItemEntry entry) {
         if (entry == null) return ItemStack.EMPTY;
-        return parseItemStack(entry.rawData(), entry.getTargetEquipmentSlot(), entry.getCleanName());
-    }
-
-    /**
-     * Legacy convenience overload defaulting to null hints.
-     */
-    public static ItemStack parseItemStack(String rawDataJson) {
-        return parseItemStack(rawDataJson, null, null);
+        String cacheKey = entry.id() + "_" + entry.getTargetEquipmentSlot();
+        ItemStack cached = PARSED_STACK_CACHE.get(cacheKey);
+        if (cached != null) {
+            return cached.copy();
+        }
+        ItemStack parsed = parseItemStack(entry.rawData(), entry.getTargetEquipmentSlot(), entry.getCleanName());
+        if (!parsed.isEmpty() && Minecraft.getInstance().level != null) {
+            PARSED_STACK_CACHE.put(cacheKey, parsed.copy());
+        }
+        return parsed;
     }
 
     /**
@@ -112,84 +117,167 @@ public class RawDataParser {
                 stack.set(DataComponents.DYED_COLOR, new DyedItemColor(dyeColor));
             }
 
-            // 6. Modern components passthrough
+            // 6. Modern components passthrough (CustomModelData, ItemModel, Equippable)
             if (root.has("components") && root.get("components").isJsonObject()) {
                 JsonObject compObj = root.getAsJsonObject("components");
 
-                if (compObj.has("minecraft:custom_model_data")) {
+                // Parse Custom Model Data (supports both primitive number, array, and object formats)
+                JsonElement cmdElem = compObj.has("minecraft:custom_model_data")
+                        ? compObj.get("minecraft:custom_model_data")
+                        : compObj.get("custom_model_data");
+
+                if (cmdElem != null) {
                     try {
-                        float cmd = compObj.get("minecraft:custom_model_data").getAsFloat();
-                        stack.set(DataComponents.CUSTOM_MODEL_DATA,
-                                new CustomModelData(List.of(cmd), List.of(), List.of(), List.of()));
+                        List<Float> floats = new ArrayList<>();
+                        List<Boolean> flags = new ArrayList<>();
+                        List<String> strings = new ArrayList<>();
+                        List<Integer> colors = new ArrayList<>();
+
+                        if (cmdElem.isJsonPrimitive()) {
+                            floats.add(cmdElem.getAsFloat());
+                        } else if (cmdElem.isJsonObject()) {
+                            JsonObject cmdObj = cmdElem.getAsJsonObject();
+                            if (cmdObj.has("floats") && cmdObj.get("floats").isJsonArray()) {
+                                for (JsonElement f : cmdObj.getAsJsonArray("floats")) {
+                                    floats.add(f.getAsFloat());
+                                }
+                            }
+                            if (cmdObj.has("strings") && cmdObj.get("strings").isJsonArray()) {
+                                for (JsonElement s : cmdObj.getAsJsonArray("strings")) {
+                                    strings.add(s.getAsString());
+                                }
+                            }
+                        } else if (cmdElem.isJsonArray()) {
+                            for (JsonElement f : cmdElem.getAsJsonArray()) {
+                                if (f.isJsonPrimitive()) floats.add(f.getAsFloat());
+                            }
+                        }
+
+                        if (!floats.isEmpty() || !strings.isEmpty()) {
+                            stack.set(DataComponents.CUSTOM_MODEL_DATA, new CustomModelData(floats, flags, strings, colors));
+                        }
                     } catch (Exception ignored) {}
                 }
 
-                if (compObj.has("minecraft:item_model")) {
-                    String modelPath = compObj.get("minecraft:item_model").getAsString();
+                // Parse Item Model (1.21.4+ item_model component)
+                JsonElement modelElem = compObj.has("minecraft:item_model")
+                        ? compObj.get("minecraft:item_model")
+                        : compObj.get("item_model");
+
+                if (modelElem != null && modelElem.isJsonPrimitive()) {
+                    String modelPath = modelElem.getAsString();
                     Identifier modelId = Identifier.tryParse(modelPath.contains(":") ? modelPath : "minecraft:" + modelPath);
                     if (modelId != null) {
                         stack.set(DataComponents.ITEM_MODEL, modelId);
                     }
                 }
 
-                if (compObj.has("minecraft:equippable") && level != null) {
-                    var equipElem = compObj.get("minecraft:equippable");
+                // Parse Equippable component
+                JsonElement equipElem = compObj.has("minecraft:equippable")
+                        ? compObj.get("minecraft:equippable")
+                        : compObj.get("equippable");
+
+                if (equipElem != null && level != null) {
                     var ops = level.registryAccess().createSerializationContext(JsonOps.INSTANCE);
                     var parsedEq = Equippable.CODEC.parse(ops, equipElem).result();
                     if (parsedEq.isPresent()) {
                         stack.set(DataComponents.EQUIPPABLE, parsedEq.get());
                     }
                 }
+
+                // Parse Player Head Profile (Base64 skin textures for custom skull helmets like Bly's Helmet)
+                JsonElement profileElem = compObj.has("minecraft:profile")
+                        ? compObj.get("minecraft:profile")
+                        : compObj.get("profile");
+
+                if (profileElem != null && level != null) {
+                    var ops = level.registryAccess().createSerializationContext(JsonOps.INSTANCE);
+                    var parsedProfile = net.minecraft.world.item.component.ResolvableProfile.CODEC.parse(ops, profileElem).result();
+                    if (parsedProfile.isPresent()) {
+                        stack.set(DataComponents.PROFILE, parsedProfile.get());
+                    }
+                }
             }
 
             // 7. Dynamic Equippable & Custom Armor Asset Resolver
-            EquipmentSlot slot = explicitSlot;
-            if (slot == null) {
-                var defaultEquip = stack.getItem().components().get(DataComponents.EQUIPPABLE);
-                if (defaultEquip != null) {
-                    slot = defaultEquip.slot();
-                } else {
+            boolean isCustomHeadModel = stack.is(Items.PAPER)
+                    || stack.is(Items.CARVED_PUMPKIN)
+                    || stack.is(Items.PLAYER_HEAD);
+
+            Equippable existingEq = stack.get(DataComponents.EQUIPPABLE);
+            boolean hasCustomAssetAlready = existingEq != null
+                    && existingEq.assetId().isPresent()
+                    && !existingEq.assetId().get().identifier().getNamespace().equals("minecraft");
+
+            if (!isCustomHeadModel && !hasCustomAssetAlready) {
+                EquipmentSlot slot = explicitSlot != null ? explicitSlot
+                        : (existingEq != null ? existingEq.slot() : null);
+
+                // Fallback slot detection from base item ID (e.g., minecraft:leather_boots -> FEET)
+                if (slot == null) {
                     String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
                     if (itemId.contains("helmet") || itemId.contains("cap") || itemId.contains("head")) slot = EquipmentSlot.HEAD;
                     else if (itemId.contains("chestplate") || itemId.contains("tunic") || itemId.contains("chest")) slot = EquipmentSlot.CHEST;
                     else if (itemId.contains("leggings") || itemId.contains("pants") || itemId.contains("legs")) slot = EquipmentSlot.LEGS;
                     else if (itemId.contains("boots") || itemId.contains("feet")) slot = EquipmentSlot.FEET;
                 }
-            }
 
-            if (slot != null) {
-                String nameToInspect = (cleanNameHint != null && !cleanNameHint.isBlank())
-                        ? cleanNameHint.toLowerCase()
-                        : stack.getHoverName().getString().toLowerCase();
+                if (slot != null) {
+                    // Build candidate set keys from parsed customName, cleanNameHint, and ExecutableItems ID
+                    List<String> rawNames = new ArrayList<>();
+                    if (!customName.getString().isBlank()) rawNames.add(customName.getString());
+                    if (cleanNameHint != null && !cleanNameHint.isBlank()) rawNames.add(cleanNameHint);
 
-                // Strip armor slot words and non-alphanumeric decorators to isolate set identifier
-                String cleanSetKey = nameToInspect
-                        .replace("chestplate", "")
-                        .replace("leggings", "")
-                        .replace("helmet", "")
-                        .replace("boots", "")
-                        .replace("elytra", "")
-                        .replace("hat", "")
-                        .replaceAll("[^a-z0-9]", "")
-                        .trim();
+                    // Also check PublicBukkitValues -> executableitems:ei-id (e.g., "BLOSSOM_PRAETORIANBOOTS")
+                    if (root.has("components") && root.getAsJsonObject("components").has("minecraft:custom_data")) {
+                        JsonObject customData = root.getAsJsonObject("components").getAsJsonObject("minecraft:custom_data");
+                        if (customData.has("PublicBukkitValues") && customData.getAsJsonObject("PublicBukkitValues").has("executableitems:ei-id")) {
+                            String eiId = customData.getAsJsonObject("PublicBukkitValues").get("executableitems:ei-id").getAsString();
+                            rawNames.add(eiId.replaceFirst("(?i)^blossom_", ""));
+                        }
+                    }
 
-                if (!cleanSetKey.isBlank()) {
-                    // Strips red/leather dye tint so true custom asset textures render cleanly
-                    stack.remove(DataComponents.DYED_COLOR);
+                    Identifier matchedAsset = null;
+                    Identifier resolvedItemModel = null;
 
-                    Identifier assetId = Identifier.tryParse(cleanSetKey + ":" + cleanSetKey + "armor");
-                    if (assetId != null) {
-                        var assetKey = ResourceKey.create(
-                                EquipmentAssets.ROOT_ID,
-                                assetId
-                        );
+                    // 1. Automatic lookup via Resource Pack items/*.json CustomModelData table (100% exact, zero manual aliases)
+                    resolvedItemModel = resolveModelFromCmd(stack);
+                    if (resolvedItemModel != null) {
+                        matchedAsset = findEquipmentAssetInPack(resolvedItemModel.getNamespace());
+                    }
 
+                    // 2. Fallback to name / ei-id matching if no CMD match was found
+                    if (matchedAsset == null) {
+                        for (String candidateName : rawNames) {
+                            String cleanSetKey = sanitizeLegacyAmpersands(candidateName.toLowerCase())
+                                    .replaceAll("§[0-9a-fk-or]", "")
+                                    .replace("chestplate", "")
+                                    .replace("leggings", "")
+                                    .replace("helmet", "")
+                                    .replace("boots", "")
+                                    .replace("elytra", "")
+                                    .replace("hat", "")
+                                    .replaceAll("[^a-z0-9]", "")
+                                    .trim();
+
+                            if (!cleanSetKey.isBlank()) {
+                                matchedAsset = findEquipmentAssetInPack(cleanSetKey);
+                                if (matchedAsset != null) break;
+                            }
+                        }
+                    }
+
+                    if (matchedAsset != null) {
+                        stack.remove(DataComponents.DYED_COLOR);
+                        var assetKey = ResourceKey.create(EquipmentAssets.ROOT_ID, matchedAsset);
                         var equippable = Equippable.builder(slot)
                                 .setAsset(assetKey)
                                 .build();
-
                         stack.set(DataComponents.EQUIPPABLE, equippable);
-                        stack.remove(DataComponents.DYED_COLOR);
+
+                        if (resolvedItemModel != null) {
+                            stack.set(DataComponents.ITEM_MODEL, resolvedItemModel);
+                        }
                     }
                 }
             }
@@ -198,6 +286,48 @@ public class RawDataParser {
         } catch (Exception ignored) {}
 
         return ItemStack.EMPTY;
+    }
+
+    private static Identifier findEquipmentAssetInPack(String setKey) {
+        if (setKey == null || setKey.isBlank()) return null;
+
+        if (cachedEquipmentAssets == null) {
+            cachedEquipmentAssets = new java.util.HashMap<>();
+            var rm = Minecraft.getInstance().getResourceManager();
+            var found = rm.listResources("equipment", id -> id.getPath().endsWith(".json"));
+
+            for (Identifier foundId : found.keySet()) {
+                String ns = foundId.getNamespace();
+                if (ns.equals("minecraft")) continue; // Skip vanilla leather/iron/diamond
+
+                String path = foundId.getPath();
+                String assetName = path.substring("equipment/".length(), path.length() - ".json".length());
+                Identifier assetId = Identifier.fromNamespaceAndPath(ns, assetName);
+
+                // Index by namespace, full asset name, and stripped base key
+                String normNs = ns.replace("set", "").replace("_armor", "").replace("armor", "").replace("_", "");
+                String normAsset = assetName.replace("set", "").replace("_armor", "").replace("armor", "").replace("_", "");
+
+                if (!normNs.isEmpty()) cachedEquipmentAssets.putIfAbsent(normNs, assetId);
+                if (!normAsset.isEmpty()) cachedEquipmentAssets.putIfAbsent(normAsset, assetId);
+                cachedEquipmentAssets.putIfAbsent(assetName.replace("_", ""), assetId);
+            }
+        }
+
+        // 1. Direct O(1) lookup
+        if (cachedEquipmentAssets.containsKey(setKey)) {
+            return cachedEquipmentAssets.get(setKey);
+        }
+
+        // 2. Fallback substring match against cached keys (e.g., "forestgod" -> "forest")
+        for (Map.Entry<String, Identifier> entry : cachedEquipmentAssets.entrySet()) {
+            String key = entry.getKey();
+            if (key.length() >= 4 && (setKey.contains(key) || key.contains(setKey))) {
+                return entry.getValue();
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -321,7 +451,7 @@ public class RawDataParser {
             }
         } catch (Exception ignored) {}
 
-        return fallback != null ? Component.literal(fallback) : Component.empty();
+        return fallback != null ? parseFormattedText(sanitizeLegacyAmpersands(fallback), null) : Component.empty();
     }
 
     /**
@@ -426,7 +556,9 @@ public class RawDataParser {
 
     private static Component parseJsonComponent(String json, net.minecraft.core.HolderLookup.Provider registryAccess) {
         try {
-            var elem = JsonParser.parseString(json);
+            // Convert valid & color/format codes to § and strip invalid gradient & prefixes (like &E, &H, &S)
+            String cleanedJson = sanitizeLegacyAmpersands(json);
+            var elem = JsonParser.parseString(cleanedJson);
             if (registryAccess != null) {
                 var ops = registryAccess.createSerializationContext(JsonOps.INSTANCE);
                 var res = ComponentSerialization.CODEC.parse(ops, elem).result();
@@ -437,5 +569,137 @@ public class RawDataParser {
             }
         } catch (Exception ignored) {}
         return null;
+    }
+
+    public static String sanitizeLegacyAmpersands(String input) {
+        if (input == null || input.isEmpty()) return input;
+        // 1. Convert valid Minecraft color/formatting codes (&0-9, &a-f, &k-o, &r) to §
+        String converted = input.replaceAll("(?i)&([0-9a-fk-or])", "§$1");
+        // 2. Remove any leftover invalid &X sequences (e.g., &E, &H, &S from broken gradient strings)
+        converted = converted.replaceAll("&(?![#0-9a-fA-Fk-oK-OrR])", "");
+        return converted;
+    }
+
+    private static Identifier resolveModelFromCmd(ItemStack stack) {
+        if (cachedCmdModelMap == null) {
+            cachedCmdModelMap = new java.util.HashMap<>();
+            var rm = Minecraft.getInstance().getResourceManager();
+
+            // 1. Scan models/item/*.json "overrides" across ALL namespaces (minecraft, ia, itemsadder, etc.)
+            var legacyItemModels = rm.listResources("models/item", id -> id.getPath().endsWith(".json"));
+            for (var entry : legacyItemModels.entrySet()) {
+                String path = entry.getKey().getPath(); // e.g., "models/item/leather_boots.json"
+                String baseItemName = path.substring("models/item/".length(), path.length() - ".json".length());
+
+                try (var reader = entry.getValue().openAsReader()) {
+                    JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
+                    if (root.has("overrides") && root.get("overrides").isJsonArray()) {
+                        for (JsonElement el : root.getAsJsonArray("overrides")) {
+                            if (!el.isJsonObject()) continue;
+                            JsonObject overrideObj = el.getAsJsonObject();
+                            if (overrideObj.has("predicate") && overrideObj.get("predicate").isJsonObject()
+                                    && overrideObj.has("model") && overrideObj.get("model").isJsonPrimitive()) {
+                                JsonObject pred = overrideObj.getAsJsonObject("predicate");
+                                if (pred.has("custom_model_data") && pred.get("custom_model_data").isJsonPrimitive()) {
+                                    int cmdVal = Math.round(pred.get("custom_model_data").getAsFloat());
+                                    Identifier modelId = Identifier.tryParse(overrideObj.get("model").getAsString());
+                                    if (modelId != null) {
+                                        cachedCmdModelMap.put(baseItemName + ":" + cmdVal, modelId);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            // 2. Also scan modern items/*.json across ALL namespaces
+            var itemDefs = rm.listResources("items", id -> id.getPath().endsWith(".json"));
+            for (var entry : itemDefs.entrySet()) {
+                String path = entry.getKey().getPath();
+                String baseItemName = path.substring("items/".length(), path.length() - ".json".length());
+
+                try (var reader = entry.getValue().openAsReader()) {
+                    JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
+                    if (root.has("model") && root.get("model").isJsonObject()) {
+                        extractRangeEntries(baseItemName, root.getAsJsonObject("model"));
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
+        String baseItemPath = BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
+        CustomModelData cmd = stack.get(DataComponents.CUSTOM_MODEL_DATA);
+        if (cmd != null && !cmd.floats().isEmpty()) {
+            int cmdInt = Math.round(cmd.floats().getFirst());
+
+            // 1. Try exact base item first (e.g. leather_boots:1)
+            Identifier exact = cachedCmdModelMap.get(baseItemPath + ":" + cmdInt);
+            if (exact != null) return exact;
+
+            // 2. Fallback across armor material equivalents (e.g. leather_boots -> netherite_boots, diamond_boots, etc.)
+            String slotSuffix = null;
+            if (baseItemPath.endsWith("_helmet")) slotSuffix = "_helmet";
+            else if (baseItemPath.endsWith("_chestplate")) slotSuffix = "_chestplate";
+            else if (baseItemPath.endsWith("_leggings")) slotSuffix = "_leggings";
+            else if (baseItemPath.endsWith("_boots")) slotSuffix = "_boots";
+
+            if (slotSuffix != null) {
+                for (String tier : List.of("netherite", "diamond", "iron", "golden", "chainmail", "leather")) {
+                    Identifier tierMatch = cachedCmdModelMap.get(tier + slotSuffix + ":" + cmdInt);
+                    if (tierMatch != null) return tierMatch;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static void extractRangeEntries(String baseItemName, JsonObject obj) {
+        if (obj == null) return;
+
+        if (obj.has("entries") && obj.get("entries").isJsonArray()) {
+            for (JsonElement el : obj.getAsJsonArray("entries")) {
+                if (!el.isJsonObject()) continue;
+                JsonObject entryObj = el.getAsJsonObject();
+                if (entryObj.has("threshold") && entryObj.has("model")) {
+                    int threshold = Math.round(entryObj.get("threshold").getAsFloat());
+                    JsonElement modelEl = entryObj.get("model");
+                    String modelStr = null;
+
+                    if (modelEl.isJsonPrimitive()) {
+                        modelStr = modelEl.getAsString();
+                    } else if (modelEl.isJsonObject()) {
+                        JsonObject targetModel = modelEl.getAsJsonObject();
+                        if (targetModel.has("model") && targetModel.get("model").isJsonPrimitive()) {
+                            modelStr = targetModel.get("model").getAsString();
+                        } else {
+                            extractRangeEntries(baseItemName, targetModel);
+                        }
+                    }
+
+                    if (modelStr != null) {
+                        Identifier id = Identifier.tryParse(modelStr);
+                        if (id != null) {
+                            cachedCmdModelMap.put(baseItemName + ":" + threshold, id);
+                        }
+                    }
+                }
+            }
+        }
+
+        for (String key : List.of("model", "fallback", "on_true", "on_false")) {
+            if (obj.has(key) && obj.get(key).isJsonObject()) {
+                extractRangeEntries(baseItemName, obj.getAsJsonObject(key));
+            }
+        }
+
+        if (obj.has("cases") && obj.get("cases").isJsonArray()) {
+            for (JsonElement caseEl : obj.getAsJsonArray("cases")) {
+                if (caseEl.isJsonObject() && caseEl.getAsJsonObject().has("model") && caseEl.getAsJsonObject().get("model").isJsonObject()) {
+                    extractRangeEntries(baseItemName, caseEl.getAsJsonObject().getAsJsonObject("model"));
+                }
+            }
+        }
     }
 }
