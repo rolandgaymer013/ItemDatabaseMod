@@ -30,6 +30,8 @@ import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class FittingRoomScreen extends Screen {
 
@@ -81,6 +83,17 @@ public class FittingRoomScreen extends Screen {
     private float yawVelocity = 0.0f;
     private float pitchVelocity = 0.0f;
     private boolean autoRotate = true;
+
+    private static final int PANEL_W = 390;
+    private static final int PANEL_H = 190;
+    private static final int STATS_OFFSET_X = 208;
+    private static final int TRAITS_OFFSET_Y = 110;
+
+    private static final Pattern EFFECT_PATTERN = Pattern.compile(
+            "(?i)\\b(Hero of the Village|Dolphins Grace|Fire Resistance|Water Breathing|Jump Boost|Night Vision|Conduit Power|Speed|Strength|Resistance|Haste|Regeneration|Absorption|Invisibility|Health Boost|Saturation)(?:\\s+([IVXLCDM]+))?"
+    );
+    private static final Pattern INT_STAT_PATTERN = Pattern.compile("\\+(\\d+)");
+    private static final Pattern DOUBLE_STAT_PATTERN = Pattern.compile("\\+?(\\d+(\\.\\d+)?)");
 
     public FittingRoomScreen(Screen parent) {
         super(Component.literal("Fitting Room & Loadout Preview"));
@@ -355,9 +368,7 @@ public class FittingRoomScreen extends Screen {
             }
 
             // Identify potion effects: optional roman numeral ([IVXLCDM]+)? so un-tiered effects like Night Vision match
-            java.util.regex.Matcher effMatcher = java.util.regex.Pattern.compile(
-                    "(?i)\\b(Hero of the Village|Dolphins Grace|Fire Resistance|Water Breathing|Jump Boost|Night Vision|Conduit Power|Speed|Strength|Resistance|Haste|Regeneration|Absorption|Invisibility|Health Boost|Saturation)(?:\\s+([IVXLCDM]+))?"
-            ).matcher(clean);
+            Matcher effMatcher = EFFECT_PATTERN.matcher(clean);
 
             boolean foundEffect = false;
             while (effMatcher.find()) {
@@ -374,7 +385,7 @@ public class FittingRoomScreen extends Screen {
                 String action = clean.replaceFirst("^[>•✦▶*\\-]+\\s*", "");
                 int whenIdx = action.toLowerCase().indexOf(" when ");
                 if (whenIdx != -1) action = action.substring(0, whenIdx).trim();
-                this.equippedTraits.add(Component.literal("§6• §f" + action + (req.isEmpty() ? "" : " §8[" + req + "]")));
+                consolidatedTraits.putIfAbsent("custom:" + action.toLowerCase(), new TraitInfo(action, 1, "", req, action));
             }
         }
 
@@ -404,21 +415,21 @@ public class FittingRoomScreen extends Screen {
         // 5. Offhand Shields / Totems
         if (slot == EquipmentSlot.OFFHAND) {
             if (stack.is(Items.SHIELD)) {
-                this.equippedTraits.add(Component.literal("§7• §fProjectile Deflection"));
+                consolidatedTraits.putIfAbsent("custom:shield_deflect", new TraitInfo("Projectile Deflection", 1, "", "Offhand", "Projectile Deflection"));
             } else if (stack.is(Items.TOTEM_OF_UNDYING)) {
                 this.totalBonusHealth += 4;
-                this.equippedTraits.add(Component.literal("§7• §eSecond Chance (Totem)"));
+                consolidatedTraits.putIfAbsent("custom:totem_second_chance", new TraitInfo("Second Chance (Totem)", 1, "", "Offhand", "§eSecond Chance (Totem)"));
             }
         }
     }
 
     private int extractInt(String text) {
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\+(\\d+)").matcher(text);
+        Matcher m = INT_STAT_PATTERN.matcher(text);
         return m.find() ? Integer.parseInt(m.group(1)) : 0;
     }
 
     private double extractDouble(String text) {
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\+?(\\d+(\\.\\d+)?)").matcher(text);
+        Matcher m = DOUBLE_STAT_PATTERN.matcher(text);
         return m.find() ? Double.parseDouble(m.group(1)) : 0.0;
     }
 
@@ -465,19 +476,21 @@ public class FittingRoomScreen extends Screen {
                 isDraggingModel = false;
             }
 
+            float dt = Math.min(this.minecraft.getDeltaTracker().getGameTimeDeltaTicks(), 2.0f);
+
             if (Math.abs(this.yawVelocity) > 0.05f) {
-                this.playerYaw = (this.playerYaw + this.yawVelocity) % 360.0f;
-                this.yawVelocity *= 0.88f;
+                this.playerYaw = (this.playerYaw + this.yawVelocity * dt) % 360.0f;
+                this.yawVelocity *= (float) Math.pow(0.88, dt);
             } else {
                 this.yawVelocity = 0.0f;
                 if (this.autoRotate) {
-                    this.playerYaw = (this.playerYaw + 0.45f) % 360.0f;
+                    this.playerYaw = (this.playerYaw + 0.45f * dt) % 360.0f;
                 }
             }
 
             if (Math.abs(this.pitchVelocity) > 0.05f) {
-                this.playerPitch = Mth.clamp(this.pitchVelocity, -85.0f, 85.0f);
-                this.pitchVelocity *= 0.85f;
+                this.playerPitch = Mth.clamp(this.playerPitch + this.pitchVelocity * dt, -85.0f, 85.0f);
+                this.pitchVelocity *= (float) Math.pow(0.85, dt);
             } else {
                 this.pitchVelocity = 0.0f;
             }
@@ -685,6 +698,7 @@ public class FittingRoomScreen extends Screen {
             for (EquipmentSlot slot : EquipmentSlot.values()) {
                 ItemStack stack = loadedMap.getOrDefault(slot, ItemStack.EMPTY);
                 this.currentLoadout.put(slot, stack.copy());
+                this.currentEntries.remove(slot);
             }
 
             for (PreviewSlotWidget widget : this.slotWidgets) {

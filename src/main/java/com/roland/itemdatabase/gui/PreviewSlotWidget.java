@@ -16,30 +16,41 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
+/**
+ * Interactive 20x20 equipment slot widget displayed in the Fitting Room.
+ * Renders the equipped item's downloaded icon (or 3D/vanilla item fallback),
+ * displays slot-specific placeholder glyphs when empty, and renders rich tooltips on hover.
+ */
 public class PreviewSlotWidget extends AbstractWidget {
 
     private final EquipmentSlot slot;
     private final Consumer<PreviewSlotWidget> onClick;
     private ItemStack itemStack = ItemStack.EMPTY;
     private ItemEntry currentEntry;
+    private boolean entryLookupAttempted = false;
 
+    /** Full constructor accepting both an {@link ItemStack} and its paired database {@link ItemEntry}. */
     public PreviewSlotWidget(int x, int y, EquipmentSlot slot, ItemStack initialItem, ItemEntry initialEntry, Consumer<PreviewSlotWidget> onClick) {
         super(x, y, 20, 20, Component.literal(slot.getName()));
         this.slot = slot;
         this.itemStack = initialItem != null ? initialItem : ItemStack.EMPTY;
         this.currentEntry = initialEntry;
+        this.entryLookupAttempted = (initialEntry != null);
         this.onClick = onClick;
     }
 
+    /** Convenience constructor when only an {@link ItemStack} is available initially. */
     public PreviewSlotWidget(int x, int y, EquipmentSlot slot, ItemStack initialItem, Consumer<PreviewSlotWidget> onClick) {
         this(x, y, slot, initialItem, null, onClick);
     }
 
+    /** Convenience constructor creating an empty equipment slot. */
     public PreviewSlotWidget(int x, int y, EquipmentSlot slot, Consumer<PreviewSlotWidget> onClick) {
         this(x, y, slot, ItemStack.EMPTY, null, onClick);
     }
@@ -56,17 +67,28 @@ public class PreviewSlotWidget extends AbstractWidget {
         return this.currentEntry;
     }
 
-    public void setItem(ItemStack stack, ItemEntry entry) {
-        this.itemStack = stack != null ? stack : ItemStack.EMPTY;
-        this.currentEntry = entry;
-    }
-
     public ItemEntry getItemEntry() {
         return this.currentEntry;
     }
 
+    /** Updates both the displayed {@link ItemStack} and its paired {@link ItemEntry} metadata. */
+    public void setItem(ItemStack stack, ItemEntry entry) {
+        this.itemStack = stack != null ? stack : ItemStack.EMPTY;
+        this.currentEntry = entry;
+        this.entryLookupAttempted = (entry != null);
+    }
+
+    /** Updates the displayed {@link ItemStack} without explicit database metadata. */
     public void setItemStack(ItemStack stack) {
         setItem(stack, null);
+    }
+
+    /** Lazily resolves the matching {@link ItemEntry} once if the stack was equipped without metadata. */
+    private void resolveEntryIfNeeded() {
+        if (this.currentEntry == null && !this.entryLookupAttempted && !this.itemStack.isEmpty()) {
+            this.entryLookupAttempted = true;
+            this.currentEntry = DatabaseManager.findItemByName(this.itemStack.getHoverName().getString());
+        }
     }
 
     @Override
@@ -99,11 +121,7 @@ public class PreviewSlotWidget extends AbstractWidget {
 
         if (!this.itemStack.isEmpty()) {
             boolean renderedCustom = false;
-
-            // Fallback lookup by item name if entry wasn't passed directly
-            if (this.currentEntry == null) {
-                this.currentEntry = DatabaseManager.findItemByName(this.itemStack.getHoverName().getString());
-            }
+            resolveEntryIfNeeded();
 
             if (this.currentEntry != null && this.currentEntry.iconUrl() != null && !this.currentEntry.iconUrl().isBlank()) {
                 String cacheKey = (this.currentEntry.isCrateItem() ? "crate_" : "misc_") + this.currentEntry.id();
@@ -139,7 +157,10 @@ public class PreviewSlotWidget extends AbstractWidget {
             }
 
             if (!renderedCustom) {
-                graphics.item(this.itemStack, x + 2, y + 2);
+                ItemStack displayStack = this.itemStack.is(Items.ELYTRA)
+                        ? new ItemStack(Items.FEATHER)
+                        : this.itemStack;
+                graphics.item(displayStack, x + 2, y + 2);
             }
         } else {
             String icon = switch (this.slot) {
@@ -155,6 +176,10 @@ public class PreviewSlotWidget extends AbstractWidget {
         }
     }
 
+    /**
+     * Renders the full formatted tooltip for the equipped item when the cursor hovers over this slot.
+     * Reconstructs gradient names, enchantments, and lore from raw database JSON when available.
+     */
     public void renderTooltip(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
         int x = this.getX();
         int y = this.getY();
@@ -163,10 +188,7 @@ public class PreviewSlotWidget extends AbstractWidget {
             return;
         }
 
-        // Ensure currentEntry is found if it was equipped without one
-        if (this.currentEntry == null) {
-            this.currentEntry = DatabaseManager.findItemByName(this.itemStack.getHoverName().getString());
-        }
+        resolveEntryIfNeeded();
 
         List<Component> tooltipLines = new ArrayList<>();
 

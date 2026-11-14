@@ -15,7 +15,7 @@ import java.io.IOException;
  * Manages client-side configuration persistence for the BlossomCraft Item Database.
  * Handles:
  * - Persisting GUI positions (drag offsets) and custom card scale settings.
- * - Storing and sanitizing the Flask REST API endpoint URL.
+ * - Storing, upgrading (HTTP -> HTTPS), and sanitizing the REST API endpoint URL.
  * - Managing admin authentication tokens for authenticated API actions.
  */
 public class ModConfig {
@@ -45,8 +45,8 @@ public class ModConfig {
     // Admin Bridge REST API Settings
     // ==========================================
 
-    /** Base URL of the Flask REST API backend server (defaults to local development host). */
-    public String apiUrl = "http://127.0.0.1:5000";
+    /** Base URL of the BlossomCraft Item Database REST API backend server. */
+    public String apiUrl = "https://items.blossomcraft.org";
 
     /** Secret admin bearer token used to authenticate privileged POST/PATCH/DELETE endpoints. */
     public String apiToken = "";
@@ -76,7 +76,7 @@ public class ModConfig {
                 if (config != null) {
                     // Sanitize nulls if loaded from an older or partial config file version
                     if (config.apiUrl == null || config.apiUrl.isBlank()) {
-                        config.apiUrl = "http://127.0.0.1:5000";
+                        config.apiUrl = "https://items.blossomcraft.org";
                     }
                     if (config.apiToken == null) {
                         config.apiToken = "";
@@ -104,17 +104,25 @@ public class ModConfig {
     }
 
     /**
-     * Sanitizes and returns the base API URL, guaranteeing no trailing slash.
-     * Prevents endpoint concatenation errors (e.g. "http://localhost:5000//api/items").
+     * Sanitizes and returns the base API URL, upgrading legacy HTTP host entries to HTTPS
+     * and stripping trailing slashes to prevent endpoint concatenation errors
+     * (e.g. "https://items.blossomcraft.org//api/items").
      *
      * @return clean base URL string without trailing slashes.
      */
     public String getCleanApiUrl() {
         if (apiUrl == null || apiUrl.isBlank()) {
-            return "http://127.0.0.1:5000";
+            return "https://items.blossomcraft.org";
         }
         String trimmed = apiUrl.trim();
-        return trimmed.endsWith("/") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
+        // Automatically migrate existing configs pointing to the legacy HTTP endpoint
+        if (trimmed.startsWith("http://items.blossomcraft.org")) {
+            trimmed = "https://" + trimmed.substring("http://".length());
+        }
+        while (trimmed.endsWith("/")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1);
+        }
+        return trimmed;
     }
 
     /**

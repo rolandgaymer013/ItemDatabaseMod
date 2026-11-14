@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Central client-side data repository and network controller for BlossomCraft.
@@ -33,7 +34,7 @@ public class DatabaseManager {
     /**
      * Resolves the configured base API URL without trailing slashes.
      *
-     * @return Normalized base API URL string (e.g. "https://blossomcraft.org").
+     * @return Normalized base API URL string (e.g. "https://items.blossomcraft.org").
      */
     public static String getApiBase() {
         return com.roland.itemdatabase.config.ModConfig.get().getCleanApiUrl();
@@ -44,6 +45,9 @@ public class DatabaseManager {
             .followRedirects(HttpClient.Redirect.ALWAYS)
             .connectTimeout(Duration.ofSeconds(10))
             .build();
+
+    /** Prevents overlapping preload batches when multiple UI screens initialize simultaneously. */
+    private static final AtomicBoolean IS_PRELOADING = new AtomicBoolean(false);
 
     /** Primary item cache mapping Crate Item ID -> ItemEntry. */
     public static final Map<String, ItemEntry> CRATE_ITEMS = new ConcurrentHashMap<>();
@@ -67,6 +71,10 @@ public class DatabaseManager {
      * @return CompletableFuture resolving to true if items were successfully ingested into memory.
      */
     public static CompletableFuture<Boolean> preloadDatabase() {
+        if (!IS_PRELOADING.compareAndSet(false, true)) {
+            return CompletableFuture.completedFuture(!CRATE_ITEMS.isEmpty() || !MISC_ITEMS.isEmpty());
+        }
+
         return CompletableFuture.allOf(
                 fetchCrateItems(),
                 fetchCrates(),
@@ -76,7 +84,7 @@ public class DatabaseManager {
             mapItemsToCrates();
             mapItemsToMiscGroups();
             return !CRATE_ITEMS.isEmpty() || !MISC_ITEMS.isEmpty();
-        });
+        }).whenComplete((res, ex) -> IS_PRELOADING.set(false));
     }
 
     /**
@@ -228,7 +236,7 @@ public class DatabaseManager {
         }
 
         String iconUrl = (imageType != null)
-                ? getApiBase() + "/static/images/BlossomCraft_Icons/" + id + "." + imageType
+                ? getApiBase() + "/static/images/Icons/" + id + "." + imageType
                 : "";
 
         // Extract the 7 database classification tag columns
@@ -328,7 +336,7 @@ public class DatabaseManager {
         }
 
         String iconUrl = (imageType != null && !imageType.isBlank())
-                ? getApiBase() + "/static/images/BlossomCraft_Misc_Icons/" + id + "." + imageType.toLowerCase()
+                ? getApiBase() + "/static/images/Misc_Icons/" + id + "." + imageType.toLowerCase()
                 : "";
 
         List<String> tagsList = new ArrayList<>();
@@ -424,20 +432,24 @@ public class DatabaseManager {
                     ItemDatabase.LOGGER.info("[ItemDatabase] fetchCrates to {} returned status: {}", endpoint, response.statusCode());
 
                     if (response.statusCode() == 200) {
-                        JsonArray array = JsonParser.parseString(response.body()).getAsJsonArray();
-                        CRATES.clear();
-                        for (JsonElement el : array) {
-                            JsonObject obj = el.getAsJsonObject();
-                            int id = obj.get("id").getAsInt();
-                            String name = getStringSafe(obj, "CrateName", "Unknown");
-                            String date = getStringSafe(obj, "ReleaseDate", "");
-                            String tag = getStringSafe(obj, "URLTag", "");
-                            String type = getStringSafe(obj, "CrateType", "Misc");
+                        try {
+                            JsonArray array = JsonParser.parseString(response.body()).getAsJsonArray();
+                            CRATES.clear();
+                            for (JsonElement el : array) {
+                                JsonObject obj = el.getAsJsonObject();
+                                int id = obj.get("id").getAsInt();
+                                String name = getStringSafe(obj, "CrateName", "Unknown");
+                                String date = getStringSafe(obj, "ReleaseDate", "");
+                                String tag = getStringSafe(obj, "URLTag", "");
+                                String type = getStringSafe(obj, "CrateType", "Misc");
 
-                            CRATES.put(id, new CrateEntry(id, name, date, tag, type));
-                            ItemDatabase.LOGGER.info("[ItemDatabase] Registered Crate: id={}, name='{}'", id, name);
+                                CRATES.put(id, new CrateEntry(id, name, date, tag, type));
+                                ItemDatabase.LOGGER.info("[ItemDatabase] Registered Crate: id={}, name='{}'", id, name);
+                            }
+                            mapItemsToCrates();
+                        } catch (Exception e) {
+                            ItemDatabase.LOGGER.error("[ItemDatabase] Error parsing crates JSON", e);
                         }
-                        mapItemsToCrates();
                     } else {
                         ItemDatabase.LOGGER.warn("[ItemDatabase] Failed to fetch crates: HTTP {} - {}", response.statusCode(), response.body());
                     }
@@ -638,7 +650,7 @@ public class DatabaseManager {
     /**
      * Aggregates all cached items across both crates and miscellaneous categories.
      *
-     * @return Immutable snapshot list of all cached ItemEntry instances.
+     * @return Snapshot list containing all cached Crate and Misc ItemEntry instances.
      */
     public static List<ItemEntry> getAllItems() {
         List<ItemEntry> all = new ArrayList<>(CRATE_ITEMS.values());

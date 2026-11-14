@@ -14,18 +14,26 @@ import net.minecraft.client.gui.screens.inventory.tooltip.DefaultTooltipPosition
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.tags.ItemTags;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BiConsumer;
 
+/**
+ * Modal item picker screen used by the Fitting Room to browse, search, and equip
+ * crate and miscellaneous server items into armor, hand, or passive charm/relic slots.
+ */
 public class ItemCatalogPickerScreen extends Screen {
 
+    /** Pairs a reconstructed client {@link ItemStack} with its database {@link ItemEntry} metadata. */
     public record CatalogItem(ItemStack stack, ItemEntry entry) {}
+
+    /** Per-slot pool cache keyed by {@code <SLOT>_<isPassiveOnly>_<isTopLeftOnly>}. */
+    private static final java.util.Map<String, List<CatalogItem>> SLOT_POOL_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
 
     private final Screen parent;
     private final EquipmentSlot targetSlot;
@@ -45,7 +53,10 @@ public class ItemCatalogPickerScreen extends Screen {
     private final boolean isPassiveOnly;
     private final boolean isTopLeftOnly;
 
-    // 5-argument constructor
+    /** Tracks the combined Crate + Misc item count so caches invalidate automatically when async fetches complete. */
+    private static int lastCachedItemCount = -1;
+
+    /** Full 5-argument constructor supporting standard gear slots, general passive slots, and top-left passive slots. */
     public ItemCatalogPickerScreen(Screen parent, EquipmentSlot targetSlot, boolean isPassiveOnly, boolean isTopLeftOnly, BiConsumer<ItemStack, ItemEntry> onSelectCallback) {
         super(Component.literal(isPassiveOnly ? (isTopLeftOnly ? "Select Top-Left Inv Item" : "Select Hotbar / Inv Item") : "Select Item: " + targetSlot.getName().toUpperCase()));
         this.parent = parent;
@@ -56,23 +67,42 @@ public class ItemCatalogPickerScreen extends Screen {
         this.fullPool = fetchDatabaseItemsForSlot(targetSlot);
     }
 
-    // 4-argument overload (resolves FittingRoomScreen line 571)
+    /** 4-argument overload for passive hotbar/inventory charm and relic slots. */
     public ItemCatalogPickerScreen(Screen parent, EquipmentSlot targetSlot, boolean isPassiveOnly, BiConsumer<ItemStack, ItemEntry> onSelectCallback) {
         this(parent, targetSlot, isPassiveOnly, false, onSelectCallback);
     }
 
-    // 3-argument overload
+    /** 3-argument overload for standard armor and hand equipment slots. */
     public ItemCatalogPickerScreen(Screen parent, EquipmentSlot targetSlot, BiConsumer<ItemStack, ItemEntry> onSelectCallback) {
         this(parent, targetSlot, false, false, onSelectCallback);
     }
 
+    /**
+     * Builds (or retrieves from cache) the deduplicated list of wearable/equippable items valid for {@code slot}.
+     * Uses a fast raw-JSON pre-filter before invoking {@link RawDataParser#parseItemStack(ItemEntry)}.
+     */
     private List<CatalogItem> fetchDatabaseItemsForSlot(EquipmentSlot slot) {
+        if (DatabaseManager.MISC_ITEMS.isEmpty() || DatabaseManager.CRATE_ITEMS.isEmpty()) {
+            DatabaseManager.preloadDatabase();
+        }
+
+        List<ItemEntry> allEntries = DatabaseManager.getAllItems();
+        if (allEntries.size() != lastCachedItemCount) {
+            SLOT_POOL_CACHE.clear();
+            lastCachedItemCount = allEntries.size();
+        }
+
+        String poolKey = slot.name() + "_" + this.isPassiveOnly + "_" + this.isTopLeftOnly;
+        List<CatalogItem> cachedPool = SLOT_POOL_CACHE.get(poolKey);
+        if (cachedPool != null) {
+            return cachedPool;
+        }
+
         List<CatalogItem> list = new ArrayList<>();
 
         // 1. Always offer an empty slot option to unequip
         list.add(new CatalogItem(ItemStack.EMPTY, null));
 
-        List<ItemEntry> allEntries = DatabaseManager.getAllItems();
         java.util.Set<String> seenItems = new java.util.HashSet<>();
 
         for (ItemEntry entry : allEntries) {
@@ -92,6 +122,45 @@ public class ItemCatalogPickerScreen extends Screen {
             String raw = entry.rawData();
             if (raw == null || raw.isBlank()) continue;
 
+            // Fast pre-filter on raw JSON across ALL slots before expensive ItemStack parsing
+            String rawLower = raw.toLowerCase();
+            if (this.isPassiveOnly) {
+                boolean hasPassiveTag = entry.hasTag("Hotbar") || entry.hasTag("Inventory") || entry.hasTag("Charm") || entry.hasTag("Relic");
+                if (!hasPassiveTag) continue;
+            } else if (slot == EquipmentSlot.HEAD) {
+                if (!rawLower.contains("helmet") && !rawLower.contains("hat") && !rawLower.contains("crown")
+                        && !rawLower.contains("hood") && !rawLower.contains("ears") && !rawLower.contains("mask")
+                        && !rawLower.contains("cap") && !rawLower.contains("pumpkin") && !rawLower.contains("player_head")
+                        && !rawLower.contains("wing") && !rawLower.contains("\"head\"")
+                        && !entry.hasTag("Helmet") && !entry.hasTag("Hat") && !entry.hasTag("Armor") && !entry.hasTag("Wings")) {
+                    continue;
+                }
+            } else if (slot == EquipmentSlot.CHEST) {
+                if (!rawLower.contains("chestplate") && !rawLower.contains("elytra") && !rawLower.contains("tunic")
+                        && !rawLower.contains("cape") && !rawLower.contains("\"chest\"")) {
+                    continue;
+                }
+            } else if (slot == EquipmentSlot.LEGS) {
+                if (!rawLower.contains("leggings") && !rawLower.contains("pants") && !rawLower.contains("\"legs\"")) {
+                    continue;
+                }
+            } else if (slot == EquipmentSlot.FEET) {
+                if (!rawLower.contains("boots") && !rawLower.contains("slipper") && !rawLower.contains("\"feet\"")) {
+                    continue;
+                }
+            } else if (slot == EquipmentSlot.MAINHAND || slot == EquipmentSlot.OFFHAND) {
+                boolean likelyHand = rawLower.contains("sword") || rawLower.contains("axe") || rawLower.contains("pickaxe")
+                        || rawLower.contains("shovel") || rawLower.contains("hoe") || rawLower.contains("bow")
+                        || rawLower.contains("trident") || rawLower.contains("mace") || rawLower.contains("shield")
+                        || rawLower.contains("totem") || rawLower.contains("when held") || rawLower.contains("while held")
+                        || rawLower.contains("in offhand to wear")
+                        || rawLower.contains("wing") || rawLower.contains("\"offhand\"")
+                        || entry.hasTag("Weapons") || entry.hasTag("Tools") || entry.hasTag("Wings")
+                        || entry.hasTag("Offhand") || entry.hasTag("Shield") || entry.hasTag("Relic")
+                        || entry.hasTag("Charm") || entry.hasTag("Artifact") || entry.hasTag("Star");
+                if (!likelyHand) continue;
+            }
+
             ItemStack stack = RawDataParser.parseItemStack(entry);
             if (stack == null || stack.isEmpty()) continue;
 
@@ -100,7 +169,6 @@ public class ItemCatalogPickerScreen extends Screen {
                 boolean hasPassiveTag = entry.hasTag("Hotbar") || entry.hasTag("Inventory") || entry.hasTag("Charm") || entry.hasTag("Relic");
                 if (!hasPassiveTag) continue;
 
-                String rawLower = entry.rawData().toLowerCase();
                 boolean requiresTopLeft = rawLower.contains("top-left") || rawLower.contains("top left");
 
                 if (this.isTopLeftOnly) {
@@ -121,13 +189,23 @@ public class ItemCatalogPickerScreen extends Screen {
 
             if (slot == EquipmentSlot.HEAD) {
                 String nameLower = entry.getCleanName().toLowerCase();
-                boolean isCustomHeadwear = (stack.is(Items.PAPER) || stack.is(Items.CARVED_PUMPKIN) || stack.is(Items.PLAYER_HEAD))
+                boolean isAnyWing = nameLower.contains("wing") || entry.hasTag("Wings");
+                boolean isOffhandOnlyCosmetic = rawLower.contains("in offhand to wear") && !rawLower.contains("wear as helmet");
+                if (isOffhandOnlyCosmetic) {
+                    continue;
+                }
+
+                boolean isHelmetWearableWing = (stack.is(Items.PAPER) || stack.is(Items.FEATHER) || stack.is(Items.LEATHER_HORSE_ARMOR) || stack.is(Items.CARVED_PUMPKIN))
+                        && isAnyWing
+                        && (rawLower.contains("wear as helmet") || !rawLower.contains("in offhand to wear"));
+                boolean isCustomHeadwear = ((stack.is(Items.PAPER) || stack.is(Items.CARVED_PUMPKIN) || stack.is(Items.PLAYER_HEAD))
                         && (nameLower.contains("helmet") || nameLower.contains("hat")
                         || nameLower.contains("crown") || nameLower.contains("hood")
                         || nameLower.contains("ears") || nameLower.contains("mask")
-                        || entry.hasTag("Helmet") || entry.hasTag("Hat") || entry.hasTag("Armor"));
+                        || entry.hasTag("Helmet") || entry.hasTag("Hat") || entry.hasTag("Armor")))
+                        || isHelmetWearableWing;
 
-                if (itemSlot == EquipmentSlot.HEAD || isCustomHeadwear) {
+                if ((itemSlot == EquipmentSlot.HEAD && !isAnyWing) || isCustomHeadwear) {
                     list.add(new CatalogItem(stack, entry));
                 }
             } else if (slot == EquipmentSlot.CHEST || slot == EquipmentSlot.LEGS || slot == EquipmentSlot.FEET) {
@@ -135,12 +213,14 @@ public class ItemCatalogPickerScreen extends Screen {
                     list.add(new CatalogItem(stack, entry));
                 }
             } else if (slot == EquipmentSlot.MAINHAND || slot == EquipmentSlot.OFFHAND) {
-
-                String rawLower = entry.rawData() != null ? entry.rawData().toLowerCase() : "";
-                boolean grantsWhenHeld = rawLower.contains("when held") || rawLower.contains("while held");
+                String nameLower = entry.getCleanName().toLowerCase();
+                boolean grantsWhenHeld = rawLower.contains("when held") || rawLower.contains("while held") || rawLower.contains("in offhand to wear");
+                boolean isCosmeticWing = (stack.is(Items.PAPER) || stack.is(Items.FEATHER) || stack.is(Items.LEATHER_HORSE_ARMOR) || stack.is(Items.CARVED_PUMPKIN))
+                        && (nameLower.contains("wing") || entry.hasTag("Wings"));
 
                 boolean isHandItem = isWeaponOrTool(stack, entry)
                         || grantsWhenHeld
+                        || isCosmeticWing
                         || itemSlot == EquipmentSlot.OFFHAND
                         || stack.is(Items.SHIELD)
                         || stack.is(Items.TOTEM_OF_UNDYING)
@@ -157,14 +237,44 @@ public class ItemCatalogPickerScreen extends Screen {
             }
         }
 
+        SLOT_POOL_CACHE.put(poolKey, list);
         return list;
     }
 
+    /**
+     * Filters out non-wearable database entries (vouchers, collection bundles, keys, spawners,
+     * plushies, and decorative furniture) while allowing explicit equippable armor and wearable wings.
+     */
     private boolean isValidGearEntry(ItemEntry entry) {
         if (entry == null) return false;
 
         String name = entry.itemName().toLowerCase();
         String group = entry.groupId() != null ? entry.groupId().toLowerCase() : "";
+        String rawLower = entry.rawData() != null ? entry.rawData().toLowerCase() : "";
+
+        // Reject loot containers, upgrade/exchange vouchers, and decorative furniture
+        if (name.contains("voucher") || name.contains("plushie") || name.contains("infinite block")
+                || name.contains("spawner") || name.contains("key") || name.contains("collection")) {
+            return false;
+        }
+
+        if (rawLower.contains("sneak-right-click to open")
+                || rawLower.contains("sneak-right-click to upgrade")
+                || rawLower.contains("with an exchange")
+                || rawLower.contains("furniture to decorate")) {
+            return false;
+        }
+
+        // Always allow items with an explicit wearable equippable slot or wearable wing lore in RawData
+        if (rawLower.contains("\"slot\":\"feet\"") || rawLower.contains("\"slot\": \"feet\"")
+                || rawLower.contains("\"slot\":\"legs\"") || rawLower.contains("\"slot\": \"legs\"")
+                || rawLower.contains("\"slot\":\"chest\"") || rawLower.contains("\"slot\": \"chest\"")
+                || rawLower.contains("\"slot\":\"head\"") || rawLower.contains("\"slot\": \"head\"")
+                || name.contains("wing")
+                || rawLower.contains("in offhand to wear")
+                || rawLower.contains("to wear as helmet")) {
+            return true;
+        }
 
         // Reject non-equipment classifications
         if (group.contains("voucher") || group.contains("furniture") || group.contains("plushie") || group.contains("pet")) {
@@ -172,15 +282,10 @@ public class ItemCatalogPickerScreen extends Screen {
         }
 
         // Allow Hotbar, Inventory, Offhand, and Hand-held charms/relics/artifacts
-        String rawLower = entry.rawData() != null ? entry.rawData().toLowerCase() : "";
         if (entry.hasTag("Hotbar") || entry.hasTag("Inventory") || entry.hasTag("Offhand")
                 || entry.hasTag("Relic") || entry.hasTag("Charm") || entry.hasTag("Artifact") || entry.hasTag("Star")
                 || rawLower.contains("when held") || rawLower.contains("while held")) {
             return true;
-        }
-
-        if (name.contains("voucher") || name.contains("plushie") || name.contains("infinite block") || name.contains("spawner") || name.contains("key")) {
-            return false;
         }
 
         if (entry.hasTag("Voucher") || entry.hasTag("Furniture") || entry.hasTag("Plushie") || entry.hasTag("Block") || entry.hasTag("Pet")) {
@@ -190,14 +295,27 @@ public class ItemCatalogPickerScreen extends Screen {
         return true;
     }
 
+    /**
+     * Prevents non-wearable block items, name tags, and unmodelled paper items from appearing
+     * in standard equipment slots while allowing custom 3D headwear, wings, and offhand cosmetics.
+     */
     private boolean isExcludedBaseItem(ItemStack stack, ItemEntry entry, EquipmentSlot slot) {
         var item = stack.getItem();
         String nameLower = entry.getCleanName().toLowerCase();
+        String rawLower = entry.rawData() != null ? entry.rawData().toLowerCase() : "";
+        boolean isWing = nameLower.contains("wing") || entry.hasTag("Wings");
+        boolean isHelmetWing = isWing && (rawLower.contains("wear as helmet") || !rawLower.contains("in offhand to wear"));
+        boolean isOffhandCosmetic = isWing || rawLower.contains("in offhand to wear");
 
-        // Disallow blocks except custom skull/pumpkin helmets
+        // Disallow blocks except custom skull/pumpkin helmets or offhand cosmetics
         if (item instanceof net.minecraft.world.item.BlockItem) {
-            if (slot == EquipmentSlot.HEAD && (item == Items.CARVED_PUMPKIN || item == Items.PLAYER_HEAD)) {
-                return !entry.hasTag("Armor") && !entry.hasTag("Hat") && !entry.hasTag("Helmet");
+            if (item == Items.CARVED_PUMPKIN || item == Items.PLAYER_HEAD) {
+                if (slot == EquipmentSlot.HEAD) {
+                    return !entry.hasTag("Armor") && !entry.hasTag("Hat") && !entry.hasTag("Helmet") && !isHelmetWing;
+                }
+                if (slot == EquipmentSlot.OFFHAND || slot == EquipmentSlot.MAINHAND) {
+                    return !isOffhandCosmetic;
+                }
             }
             return true;
         }
@@ -206,14 +324,18 @@ public class ItemCatalogPickerScreen extends Screen {
             return true;
         }
 
-        // Allow custom model data Paper items ONLY if they are hats/helmets for the HEAD slot
+        // Allow custom model data Paper items for HEAD headwear/dual-wear wings or OFFHAND/MAINHAND cosmetics
         if (item == Items.PAPER) {
             if (slot == EquipmentSlot.HEAD) {
                 boolean isHeadwear = nameLower.contains("helmet") || nameLower.contains("hat")
                         || nameLower.contains("crown") || nameLower.contains("hood")
                         || nameLower.contains("ears") || nameLower.contains("mask")
+                        || isHelmetWing
                         || entry.hasTag("Helmet") || entry.hasTag("Hat") || entry.hasTag("Armor");
                 return !isHeadwear;
+            }
+            if (slot == EquipmentSlot.OFFHAND || slot == EquipmentSlot.MAINHAND) {
+                return !isOffhandCosmetic;
             }
             return true;
         }
@@ -221,6 +343,10 @@ public class ItemCatalogPickerScreen extends Screen {
         return false;
     }
 
+    /**
+     * Checks whether a stack represents a weapon or tool via vanilla item tags,
+     * {@link net.minecraft.core.component.DataComponents#TOOL}, or database metadata tags.
+     */
     private boolean isWeaponOrTool(ItemStack stack, ItemEntry entry) {
         // 1. Tag-based checks (covers all vanilla and modded weapon/tool variants)
         if (stack.is(ItemTags.SWORDS)
@@ -275,6 +401,7 @@ public class ItemCatalogPickerScreen extends Screen {
         updateSearchFilter("");
     }
 
+    /** Filters {@code fullPool} by clean item name whenever the search box text changes. */
     private void updateSearchFilter(String query) {
         this.filteredPool.clear();
         String lower = query.toLowerCase().trim();
@@ -441,7 +568,10 @@ public class ItemCatalogPickerScreen extends Screen {
                 }
 
                 if (!renderedCustom) {
-                    graphics.item(item.stack(), slotX + 2, slotY + 2);
+                    ItemStack displayStack = item.stack().is(Items.ELYTRA)
+                            ? new ItemStack(Items.FEATHER)
+                            : item.stack();
+                    graphics.item(displayStack, slotX + 2, slotY + 2);
                 }
             } else {
                 graphics.centeredText(this.font, Component.literal("§c✕"), slotX + 10, slotY + 6, 0xFFFF5555);

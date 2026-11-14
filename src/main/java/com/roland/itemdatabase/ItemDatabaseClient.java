@@ -4,9 +4,9 @@ import com.mojang.blaze3d.platform.InputConstants;
 import com.roland.itemdatabase.data.DatabaseManager;
 import com.roland.itemdatabase.data.ItemDatabaseCommand;
 import com.roland.itemdatabase.data.ItemEntry;
+import com.roland.itemdatabase.data.RawDataParser;
 import com.roland.itemdatabase.data.UpdateChecker;
 import com.roland.itemdatabase.data.WishlistChatListener;
-import com.roland.itemdatabase.gui.FittingRoomScreen;
 import com.roland.itemdatabase.gui.ItemDatabaseScreen;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -14,9 +14,13 @@ import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenKeyboardEvents;
+import net.fabricmc.fabric.api.resource.v1.ResourceLoader;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.resources.Identifier;
+import net.minecraft.server.packs.PackType;
+import net.minecraft.server.packs.resources.ResourceManagerReloadListener;
 import org.lwjgl.glfw.GLFW;
 
 /**
@@ -30,9 +34,6 @@ public class ItemDatabaseClient implements ClientModInitializer {
     /** Admin hotkey to initiate batch container uploads while inside an inventory (default: 'B'). */
     public static KeyMapping batchUploadKey;
 
-    /** Prototype debug hotkey to test the Fitting Room screen (default: 'H'). */
-    private static KeyMapping testFittingRoomKey;
-
     /** Active target crate configuration for batch uploads (default: 1 - Season 1: Legacy). */
     public static int activeCrateId = 1;
     public static String activeCrateName = "Season 1: Legacy";
@@ -43,6 +44,12 @@ public class ItemDatabaseClient implements ClientModInitializer {
 
         // 1. Asynchronously prefetch crate data, miscellaneous items, and group structures
         DatabaseManager.preloadDatabase();
+
+        // Clear parsed stack and resource-pack CMD/equipment lookup caches on resource pack reload
+        ResourceLoader.get(PackType.CLIENT_RESOURCES).registerReloadListener(
+                Identifier.fromNamespaceAndPath("itemdatabase", "raw_data_cache_reloader"),
+                (ResourceManagerReloadListener) manager -> RawDataParser.clearCaches()
+        );
 
         // 2. Register client-side commands and chat packet listeners
         ItemDatabaseCommand.register();
@@ -68,8 +75,7 @@ public class ItemDatabaseClient implements ClientModInitializer {
                 KeyMapping.Category.MISC
         ));
 
-
-        // 5. Global tick listener: Open database GUI or Fitting Room test screen
+        // 5. Global tick listener: Open database GUI
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null) {
                 return;
@@ -84,7 +90,6 @@ public class ItemDatabaseClient implements ClientModInitializer {
                     client.setScreen(new ItemDatabaseScreen(initial));
                 }
             }
-
         });
 
         // 6. Screen keyboard listener: Trigger container batch upload inside chests/shulkers/barrels
