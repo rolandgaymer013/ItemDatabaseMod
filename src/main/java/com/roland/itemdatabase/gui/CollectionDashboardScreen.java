@@ -87,11 +87,13 @@ public class CollectionDashboardScreen extends Screen {
         this.onJumpToItem = onJumpToItem;
     }
 
+    /** Computes the horizontal origin of the dashboard panel, clamped within screen bounds. */
     private int getPanelX(int panelW) {
         int base = (this.width - panelW) / 2 + ModConfig.get().cardOffsetX;
         return Mth.clamp(base, 8, Math.max(8, this.width - panelW - 8));
     }
 
+    /** Computes the vertical origin of the dashboard panel, clamped within screen bounds. */
     private int getPanelY(int panelH) {
         int base = (this.height - panelH) / 2 - 10 + ModConfig.get().cardOffsetY;
         return Mth.clamp(base, 8, Math.max(8, this.height - panelH - 34));
@@ -111,10 +113,11 @@ public class CollectionDashboardScreen extends Screen {
 
         int btnY = panelY + panelH + 6;
         int gap = 6;
-        int wSets = 124;
-        int wWish = 116;
-        int wBack = 60;
-        int totalW = wSets + wWish + wBack + (gap * 2);
+        int wSets = 118;
+        int wWish = 108;
+        int wSync = 86;
+        int wBack = 54;
+        int totalW = wSets + wWish + wSync + wBack + (gap * 3);
         int startX = panelX + (panelW - totalW) / 2;
 
         this.addRenderableWidget(Button.builder(Component.literal("§6✦ Armor Sets (" + completedSetsCount + "/" + totalSetsCount + ")"), b -> {
@@ -133,8 +136,14 @@ public class CollectionDashboardScreen extends Screen {
         wishBtn.active = (this.uniqueWishlistCount > 0);
         this.addRenderableWidget(wishBtn);
 
+        this.addRenderableWidget(Button.builder(Component.literal("§b⇄ Web Sync"), b -> {
+            if (this.minecraft != null) {
+                this.minecraft.setScreen(new WebSyncScreen(this));
+            }
+        }).bounds(startX + wSets + wWish + (gap * 2), btnY, wSync, 20).build());
+
         this.addRenderableWidget(Button.builder(Component.literal("Back"), b -> this.onClose())
-                .bounds(startX + wSets + wWish + (gap * 2), btnY, wBack, 20)
+                .bounds(startX + wSets + wWish + wSync + (gap * 3), btnY, wBack, 20)
                 .build());
     }
 

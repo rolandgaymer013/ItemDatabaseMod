@@ -14,8 +14,12 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -400,5 +404,187 @@ public class CollectionManager {
         }
         save();
         return newState;
+    }
+
+    // ==========================================
+    // TWO-WAY WEBSITE TRACKER SYNC & DIFF ENGINE
+    // ==========================================
+
+    /**
+     * Three-way comparison result between the website's JSON ID array and the mod's local collection.
+     *
+     * @param isCrate       True for Crate Tracker (/itemtracker), false for Misc Tracker (/miscitemtracker).
+     * @param inBoth        Items present on both the website and the mod.
+     * @param onlyOnWeb     Items checked on the website that are currently unowned in the mod.
+     * @param onlyInMod     Items marked owned in the mod that are missing from the website list.
+     * @param invalidIds    Numeric IDs from the clipboard that do not exist in the selected database category.
+     * @param oppositeHits  Count of clipboard IDs that exist in the opposite category (wrong-tracker guard).
+     */
+    public record WebSyncDiff(
+            boolean isCrate,
+            List<ItemEntry> inBoth,
+            List<ItemEntry> onlyOnWeb,
+            List<ItemEntry> onlyInMod,
+            List<Integer> invalidIds,
+            int oppositeHits
+    ) {
+        /** Returns true if either the website or the mod has items missing from the other side. */
+        public boolean hasCollisions() {
+            return !onlyOnWeb.isEmpty() || !onlyInMod.isEmpty();
+        }
+
+        /** Returns true if clipboard IDs matched only the opposite tracker category (e.g., Misc IDs pasted in Crate mode). */
+        public boolean looksLikeWrongTracker() {
+            int validTotal = inBoth.size() + onlyOnWeb.size();
+            return oppositeHits > 0 && validTotal == 0;
+        }
+    }
+
+    /**
+     * Parses a website tracker JSON array (e.g. {@code [14, 27, 89]}) and computes a three-way
+     * collision diff against the mod's current owned collection without modifying saved data.
+     */
+    public static synchronized WebSyncDiff analyzeWebClipboard(String rawClipboard, boolean isCrate) {
+        List<ItemEntry> inBoth = new ArrayList<>();
+        List<ItemEntry> onlyOnWeb = new ArrayList<>();
+        List<ItemEntry> onlyInMod = new ArrayList<>();
+        List<Integer> invalidIds = new ArrayList<>();
+        int oppositeHits = 0;
+
+        Set<Integer> parsedWebIds = new HashSet<>();
+        if (rawClipboard != null && !rawClipboard.isBlank()) {
+            String cleaned = rawClipboard.replaceAll("[\\[\\]\"'\\s]", "");
+            if (!cleaned.isEmpty()) {
+                for (String token : cleaned.split(",")) {
+                    if (token.isBlank()) continue;
+                    try {
+                        parsedWebIds.add(Integer.parseInt(token.trim()));
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+        }
+
+        Map<String, ItemEntry> targetPool = isCrate ? DatabaseManager.CRATE_ITEMS : DatabaseManager.MISC_ITEMS;
+        Map<String, ItemEntry> oppositePool = isCrate ? DatabaseManager.MISC_ITEMS : DatabaseManager.CRATE_ITEMS;
+
+        // Track clean names matched on the website so "Repeat appearance" duplicates align accurately
+        Set<String> webCleanNames = new HashSet<>();
+
+        List<Integer> sortedWebIds = new ArrayList<>(parsedWebIds);
+        Collections.sort(sortedWebIds);
+
+        for (int id : sortedWebIds) {
+            String strId = String.valueOf(id);
+            ItemEntry entry = targetPool.get(strId);
+            if (entry == null) {
+                invalidIds.add(id);
+                if (oppositePool.containsKey(strId)) {
+                    oppositeHits++;
+                }
+                continue;
+            }
+
+            String cleanName = entry.getCleanName().trim().toLowerCase();
+            if (!cleanName.isEmpty()) {
+                webCleanNames.add(cleanName);
+            }
+
+            if (isOwned(entry)) {
+                inBoth.add(entry);
+            } else {
+                onlyOnWeb.add(entry);
+            }
+        }
+
+        // Find unique items owned in the mod for this category that are NOT present on the website
+        Map<String, ItemEntry> seenModOnly = new LinkedHashMap<>();
+        for (ItemEntry entry : targetPool.values()) {
+            if (isCrate && entry.hasTag("Repeat Appearance")) continue;
+            if (!isOwned(entry)) continue;
+
+            int numId = -1;
+            try {
+                numId = Integer.parseInt(entry.id().trim());
+            } catch (NumberFormatException ignored) {}
+
+            String cleanName = entry.getCleanName().trim().toLowerCase();
+            boolean matchedById = numId != -1 && parsedWebIds.contains(numId);
+            boolean matchedByName = !cleanName.isEmpty() && webCleanNames.contains(cleanName);
+
+            if (!matchedById && !matchedByName) {
+                String dedupeKey = cleanName.isEmpty() ? entry.id() : cleanName;
+                seenModOnly.putIfAbsent(dedupeKey, entry);
+            }
+        }
+        onlyInMod.addAll(seenModOnly.values());
+
+        return new WebSyncDiff(isCrate, inBoth, onlyOnWeb, onlyInMod, invalidIds, oppositeHits);
+    }
+
+    /**
+     * Applies a {@link WebSyncDiff} from the website into the mod's local collection.
+     *
+     * @param diff      Previously computed {@link WebSyncDiff}.
+     * @param overwrite If true, replaces all owned items in that category with the website list;
+     *                  if false, merges website items while preserving mod-only items.
+     * @return Number of newly added items.
+     */
+    public static synchronized int applyWebImport(WebSyncDiff diff, boolean overwrite) {
+        if (diff == null) return 0;
+        String prefix = diff.isCrate() ? "crate_" : "misc_";
+        Map<String, ItemEntry> targetPool = diff.isCrate() ? DatabaseManager.CRATE_ITEMS : DatabaseManager.MISC_ITEMS;
+
+        if (overwrite) {
+            // Remove existing scoped and bare IDs belonging to this category
+            OWNED_ITEM_IDS.removeIf(key -> {
+                if (key.startsWith(prefix)) return true;
+                return targetPool.containsKey(key);
+            });
+        }
+
+        int added = 0;
+        for (ItemEntry entry : diff.onlyOnWeb()) {
+            String scopedKey = getStorageKey(entry);
+            OWNED_ITEM_IDS.remove(entry.id().trim());
+            if (OWNED_ITEM_IDS.add(scopedKey)) {
+                added++;
+            }
+        }
+        if (overwrite) {
+            for (ItemEntry entry : diff.inBoth()) {
+                String scopedKey = getStorageKey(entry);
+                OWNED_ITEM_IDS.remove(entry.id().trim());
+                OWNED_ITEM_IDS.add(scopedKey);
+            }
+        }
+
+        rebuildCleanNameCaches();
+        save();
+        return added;
+    }
+
+    /**
+     * Serializes all owned items for the target category into Alex's exact website tracker JSON array format
+     * (e.g. {@code [14,27,89]}), excluding {@code Repeat Appearance} crate duplicates to match {@code /itemtracker}.
+     */
+    public static synchronized String exportWebTrackerJson(boolean isCrate) {
+        Map<String, ItemEntry> targetPool = isCrate ? DatabaseManager.CRATE_ITEMS : DatabaseManager.MISC_ITEMS;
+        List<Integer> exportIds = new ArrayList<>();
+
+        for (ItemEntry entry : targetPool.values()) {
+            if (isCrate && entry.hasTag("Repeat Appearance")) continue;
+            if (isOwned(entry)) {
+                try {
+                    exportIds.add(Integer.parseInt(entry.id().trim()));
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+
+        Collections.sort(exportIds);
+        JsonArray arr = new JsonArray();
+        for (int id : exportIds) {
+            arr.add(id);
+        }
+        return arr.toString();
     }
 }

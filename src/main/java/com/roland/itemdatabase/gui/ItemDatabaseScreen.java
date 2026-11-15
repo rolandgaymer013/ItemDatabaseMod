@@ -117,7 +117,7 @@ public class ItemDatabaseScreen extends Screen {
 
     // Base card dimensions
     private final int panelWidth = 380;
-    private final int panelHeight = 220;
+    private final int panelHeight = 232;
 
     private EditBox searchBox;
 
@@ -187,19 +187,11 @@ public class ItemDatabaseScreen extends Screen {
     public ItemDatabaseScreen(ItemEntry initialItem) {
         super(Component.literal("Item Database Viewer"));
 
-        if (initialItem != null && !initialItem.isCrateItem()) {
-            this.currentCategory = ViewCategory.MISC;
-        }
-
-        updateItemList();
-
         if (initialItem != null) {
-            for (int i = 0; i < items.size(); i++) {
-                if (items.get(i).id().equals(initialItem.id())) {
-                    this.currentIndex = i;
-                    break;
-                }
-            }
+            this.isDrawerOpen = true;
+            selectAndExpandItem(initialItem);
+        } else {
+            updateItemList();
         }
     }
 
@@ -306,15 +298,8 @@ public class ItemDatabaseScreen extends Screen {
         if (this.minecraft == null) return;
         this.minecraft.setScreen(new CollectionDashboardScreen(this, targetItem -> {
             if (targetItem == null) return;
-            this.currentCategory = targetItem.isCrateItem() ? ViewCategory.CRATES : ViewCategory.MISC;
-            updateItemList();
-            for (int i = 0; i < this.items.size(); i++) {
-                if (this.items.get(i).id().equals(targetItem.id())) {
-                    this.currentIndex = i;
-                    this.scrollOffset = 0;
-                    break;
-                }
-            }
+            this.isDrawerOpen = true;
+            selectAndExpandItem(targetItem);
         }));
     }
 
@@ -477,7 +462,7 @@ public class ItemDatabaseScreen extends Screen {
             ItemEntry cur = getCurrentItem();
             if (cur != null) {
                 int artBoxX = 10;
-                int toggleBoxY = panelHeight - 40;
+                int toggleBoxY = panelHeight - 50;
                 int artBoxSize = 110;
                 int buttonGap = 4;
                 int btnW = (artBoxSize - buttonGap) / 2;
@@ -504,7 +489,7 @@ public class ItemDatabaseScreen extends Screen {
                 var parentSet = getSetForCurrentItem();
                 if (parentSet != null) {
                     int pillX = 130;
-                    int pillY = panelHeight - 43;
+                    int pillY = panelHeight - 53;
                     int pillW = (panelWidth - 10) - pillX;
                     int pillH = 14;
 
@@ -516,7 +501,7 @@ public class ItemDatabaseScreen extends Screen {
                 }
 
                 // Clicked [S] Sets, [F] Fitting Room, or [V] Compare in the footer bar
-                int navY = panelHeight - 24;
+                int navY = panelHeight - 34;
                 String catLabel = (currentCategory == ViewCategory.CRATES) ? "§6[Tab] §7Misc" : "§6[Tab] §7Crates";
                 String topFooter = "§e[A/D] §7Item   " + catLabel + "   §6[S] §7Sets   §d[F] §7Fitting Room   §b[V] §7Compare";
                 int footerTotalW = this.font.width(topFooter);
@@ -548,6 +533,17 @@ public class ItemDatabaseScreen extends Screen {
                         this.minecraft.setScreen(new ComparisonScreen(this));
                         return true;
                     }
+                }
+                String drawerLabel = isDrawerOpen ? "§b[C] §7Close Tree" : "§b[C] §7Open Tree";
+                String row2Footer = drawerLabel + "   §a[G] §7Dashboard   §e[R] §7Reset";
+                int r2TotalW = this.font.width(row2Footer);
+                int r2StartX = (panelWidth - r2TotalW) / 2;
+                int dashStartX = r2StartX + this.font.width(drawerLabel + "   ");
+                int dashEndX = dashStartX + this.font.width("§a[G] §7Dashboard");
+                if (localMouseY >= navY + 11 && localMouseY <= navY + 21
+                        && localMouseX >= dashStartX - 2 && localMouseX <= dashEndX + 2) {
+                    openCollectionDashboard();
+                    return true;
                 }
             }
         }
@@ -808,7 +804,7 @@ public class ItemDatabaseScreen extends Screen {
             }
 
             // --- 2. Anchored Bottom Toggles: Owned [Space] & Wishlist [W] ---
-            int toggleBoxY = panelHeight - 40;
+            int toggleBoxY = panelHeight - 50;
             int buttonGap = 4;
             int btnW = (artBoxSize - buttonGap) / 2;
             int btnH = 13;
@@ -862,7 +858,7 @@ public class ItemDatabaseScreen extends Screen {
 
             var parentSet = getSetForCurrentItem();
             int viewTop = lineY;
-            int viewBottom = panelHeight - (parentSet != null ? 47 : 32);
+            int viewBottom = panelHeight - (parentSet != null ? 57 : 42);
             int viewHeight = viewBottom - viewTop;
 
             int maxTextWidth = panelWidth - 146;
@@ -1026,7 +1022,7 @@ public class ItemDatabaseScreen extends Screen {
                 String countColor = (totalInSet > 0 && ownedInSet >= totalInSet) ? "§a" : "§e";
 
                 int pillX = textX;
-                int pillY = panelHeight - 43;
+                int pillY = panelHeight - 53;
                 int pillW = (panelWidth - 10) - textX;
                 int pillH = 14;
 
@@ -1043,8 +1039,8 @@ public class ItemDatabaseScreen extends Screen {
                 graphics.centeredText(this.font, Component.literal(pillText), pillX + (pillW / 2), pillY + 3, 0xFFFFFFFF);
             }
 
-            // --- Footer Navigation Prompt ---
-            int navY = panelHeight - 24;
+            // --- Footer Navigation Prompt (3 Rows) ---
+            int navY = panelHeight - 34;
             graphics.horizontalLine(10, panelWidth - 10, navY, 0xFF3D1E4E);
 
             String catLabel = (currentCategory == ViewCategory.CRATES) ? "§6[Tab] §7Misc" : "§6[Tab] §7Crates";
@@ -1060,9 +1056,17 @@ public class ItemDatabaseScreen extends Screen {
 
             graphics.centeredText(
                     this.font,
-                    Component.literal(drawerLabel + "   §e[Ctrl+Scroll] §7Scale   §e[Scroll] §7Lore   §e[R] §7Reset"),
+                    Component.literal(drawerLabel + "   §a[G] §7Dashboard   §e[R] §7Reset"),
                     panelWidth / 2,
-                    navY + 12,
+                    navY + 13,
+                    0xFFFFFFFF
+            );
+
+            graphics.centeredText(
+                    this.font,
+                    Component.literal("§e[Ctrl+Scroll] §7Scale   §e[Scroll] §7Lore"),
+                    panelWidth / 2,
+                    navY + 23,
                     0xFF888888
             );
         }
@@ -2205,5 +2209,73 @@ public class ItemDatabaseScreen extends Screen {
             }
         } catch (NumberFormatException ignored) {}
         return null;
+    }
+
+    /** Focuses an item and automatically expands its parent Crate or Misc Group in the navigation drawer. */
+    public void selectAndExpandItem(ItemEntry targetItem) {
+        if (targetItem == null) return;
+        this.drawerScrollOffset = 0;
+
+        if (targetItem.isCrateItem()) {
+            this.currentCategory = ViewCategory.CRATES;
+            try {
+                CrateEntry crate = DatabaseManager.findCrateByItemId(Integer.parseInt(targetItem.id().trim()));
+                if (crate != null) {
+                    this.expandedCrateId = crate.id();
+                    String type = crate.crateType().toLowerCase();
+                    if (type.contains("seasonal")) this.selectedTab = CrateTab.SEASONAL;
+                    else if (type.contains("side")) this.selectedTab = CrateTab.SIDE;
+                    else this.selectedTab = CrateTab.MISC;
+
+                    // Pre-calculate vertical offset so crates lower in the list scroll into view automatically
+                    int rowOffset = 0;
+                    for (CrateEntry c : DatabaseManager.CRATES.values()) {
+                        if (!c.crateType().equalsIgnoreCase(this.selectedTab.label())) continue;
+                        if (c.id() == crate.id()) {
+                            this.drawerScrollOffset = Math.max(0, rowOffset - 24);
+                            break;
+                        }
+                        rowOffset += 12;
+                    }
+                }
+            } catch (NumberFormatException ignored) {}
+        } else {
+            this.currentCategory = ViewCategory.MISC;
+            try {
+                int gId = Integer.parseInt(targetItem.groupId().trim());
+                MiscGroupEntry group = DatabaseManager.MISC_GROUPS.get(gId);
+                if (group != null) {
+                    this.expandedMiscGroupId = group.id();
+                    String gType = group.groupType() != null ? group.groupType().toLowerCase() : "";
+                    if (gType.contains("voucher")) this.selectedMiscTab = MiscTab.VOUCHER;
+                    else if (gType.contains("event")) this.selectedMiscTab = MiscTab.EVENT;
+                    else if (gType.contains("furniture")) this.selectedMiscTab = MiscTab.FURNITURE;
+                    else this.selectedMiscTab = MiscTab.UNSORTED;
+
+                    // Pre-calculate vertical offset so misc groups lower in the list scroll into view automatically
+                    int rowOffset = 0;
+                    for (MiscGroupEntry g : DatabaseManager.MISC_GROUPS.values()) {
+                        boolean matchesTab = (this.selectedMiscTab == MiscTab.UNSORTED)
+                                ? (g.groupType() == null || g.groupType().isBlank() || g.groupType().equalsIgnoreCase("Unsorted") || g.groupType().equalsIgnoreCase("None") || g.groupType().equalsIgnoreCase("null"))
+                                : g.groupType().equalsIgnoreCase(this.selectedMiscTab.label());
+                        if (!matchesTab) continue;
+                        if (g.id() == group.id()) {
+                            this.drawerScrollOffset = Math.max(0, rowOffset - 24);
+                            break;
+                        }
+                        rowOffset += 12;
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        updateItemList();
+        for (int i = 0; i < this.items.size(); i++) {
+            if (this.items.get(i).id().equals(targetItem.id())) {
+                this.currentIndex = i;
+                this.scrollOffset = 0;
+                break;
+            }
+        }
     }
 }
