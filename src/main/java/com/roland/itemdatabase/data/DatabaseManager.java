@@ -64,6 +64,12 @@ public class DatabaseManager {
     /** Container cache mapping Group ID -> MiscGroupEntry. */
     public static final Map<Integer, MiscGroupEntry> MISC_GROUPS = new ConcurrentHashMap<>();
 
+    /** Ordered cache of all registered Armor Sets. */
+    public static final List<AdminApiClient.SetRow> ARMOR_SETS = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /** Lookup map from individual Item ID -> Parent SetRow. */
+    public static final Map<Integer, AdminApiClient.SetRow> ITEM_ID_TO_SET = new ConcurrentHashMap<>();
+
     /**
      * Initializes the client database by preloading all crates, misc items,
      * and container groups concurrently across background worker threads.
@@ -79,7 +85,8 @@ public class DatabaseManager {
                 fetchCrateItems(),
                 fetchCrates(),
                 fetchMiscItems(),
-                fetchMiscGroups()
+                fetchMiscGroups(),
+                fetchSets()
         ).thenApply(v -> {
             mapItemsToCrates();
             mapItemsToMiscGroups();
@@ -743,5 +750,32 @@ public class DatabaseManager {
         }
 
         return null;
+    }
+
+    /**
+     * Requests all registered armor sets from GET /api/sets and indexes constituent item IDs.
+     */
+    public static CompletableFuture<Boolean> fetchSets() {
+        return AdminApiClient.fetchSets().thenApply(loaded -> {
+            ARMOR_SETS.clear();
+            ITEM_ID_TO_SET.clear();
+
+            loaded.sort(java.util.Comparator.comparingInt(AdminApiClient.SetRow::order));
+            for (AdminApiClient.SetRow set : loaded) {
+                ARMOR_SETS.add(set);
+                for (int itemId : set.itemIds()) {
+                    ITEM_ID_TO_SET.put(itemId, set);
+                }
+            }
+            ItemDatabase.LOGGER.info("[ItemDatabase] Loaded {} Armor Sets into cache.", ARMOR_SETS.size());
+            return !ARMOR_SETS.isEmpty();
+        });
+    }
+
+    /**
+     * Returns the parent Armor Set containing the given item ID, or null if standalone.
+     */
+    public static AdminApiClient.SetRow findSetByItemId(int itemId) {
+        return ITEM_ID_TO_SET.get(itemId);
     }
 }

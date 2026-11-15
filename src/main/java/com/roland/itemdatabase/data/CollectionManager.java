@@ -244,21 +244,45 @@ public class CollectionManager {
 
     public static synchronized boolean isOwned(ItemEntry item) {
         if (item == null) return false;
-        // Check new namespaced key first, fall back to legacy raw ID for backward compatibility
-        return OWNED_ITEM_IDS.contains(getStorageKey(item)) || OWNED_ITEM_IDS.contains(item.id().trim());
+        if (OWNED_ITEM_IDS.contains(getStorageKey(item)) || OWNED_ITEM_IDS.contains(item.id().trim())) {
+            return true;
+        }
+
+        // Duplicate / "Repeat appearance" check by clean item name
+        String targetName = item.getCleanName().trim();
+        if (!targetName.isEmpty()) {
+            for (ItemEntry other : DatabaseManager.getAllItems()) {
+                if (other.getCleanName().trim().equalsIgnoreCase(targetName)) {
+                    if (OWNED_ITEM_IDS.contains(getStorageKey(other)) || OWNED_ITEM_IDS.contains(other.id().trim())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     public static synchronized boolean toggleOwned(ItemEntry item) {
         if (item == null) return false;
-        String key = getStorageKey(item);
-        // Clean up legacy un-namespaced ID if present
-        OWNED_ITEM_IDS.remove(item.id().trim());
+        boolean currentlyOwned = isOwned(item);
+        boolean newState = !currentlyOwned;
+        String targetName = item.getCleanName().trim();
 
-        boolean newState = !OWNED_ITEM_IDS.contains(key);
         if (newState) {
-            OWNED_ITEM_IDS.add(key);
+            OWNED_ITEM_IDS.remove(item.id().trim());
+            OWNED_ITEM_IDS.add(getStorageKey(item));
         } else {
-            OWNED_ITEM_IDS.remove(key);
+            // Remove this item and any "Repeat appearance" duplicates sharing the same clean name
+            OWNED_ITEM_IDS.remove(getStorageKey(item));
+            OWNED_ITEM_IDS.remove(item.id().trim());
+            if (!targetName.isEmpty()) {
+                for (ItemEntry other : DatabaseManager.getAllItems()) {
+                    if (other.getCleanName().trim().equalsIgnoreCase(targetName)) {
+                        OWNED_ITEM_IDS.remove(getStorageKey(other));
+                        OWNED_ITEM_IDS.remove(other.id().trim());
+                    }
+                }
+            }
         }
         save();
         return newState;
@@ -266,19 +290,43 @@ public class CollectionManager {
 
     public static synchronized boolean isWishlisted(ItemEntry item) {
         if (item == null) return false;
-        return WISHLIST_ITEM_IDS.contains(getStorageKey(item)) || WISHLIST_ITEM_IDS.contains(item.id().trim());
+        if (WISHLIST_ITEM_IDS.contains(getStorageKey(item)) || WISHLIST_ITEM_IDS.contains(item.id().trim())) {
+            return true;
+        }
+
+        String targetName = item.getCleanName().trim();
+        if (!targetName.isEmpty()) {
+            for (ItemEntry other : DatabaseManager.getAllItems()) {
+                if (other.getCleanName().trim().equalsIgnoreCase(targetName)) {
+                    if (WISHLIST_ITEM_IDS.contains(getStorageKey(other)) || WISHLIST_ITEM_IDS.contains(other.id().trim())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     public static synchronized boolean toggleWishlist(ItemEntry item) {
         if (item == null) return false;
-        String key = getStorageKey(item);
-        WISHLIST_ITEM_IDS.remove(item.id().trim());
+        boolean currentlyWishlisted = isWishlisted(item);
+        boolean newState = !currentlyWishlisted;
+        String targetName = item.getCleanName().trim();
 
-        boolean newState = !WISHLIST_ITEM_IDS.contains(key);
         if (newState) {
-            WISHLIST_ITEM_IDS.add(key);
+            WISHLIST_ITEM_IDS.remove(item.id().trim());
+            WISHLIST_ITEM_IDS.add(getStorageKey(item));
         } else {
-            WISHLIST_ITEM_IDS.remove(key);
+            WISHLIST_ITEM_IDS.remove(getStorageKey(item));
+            WISHLIST_ITEM_IDS.remove(item.id().trim());
+            if (!targetName.isEmpty()) {
+                for (ItemEntry other : DatabaseManager.getAllItems()) {
+                    if (other.getCleanName().trim().equalsIgnoreCase(targetName)) {
+                        WISHLIST_ITEM_IDS.remove(getStorageKey(other));
+                        WISHLIST_ITEM_IDS.remove(other.id().trim());
+                    }
+                }
+            }
         }
         save();
         return newState;

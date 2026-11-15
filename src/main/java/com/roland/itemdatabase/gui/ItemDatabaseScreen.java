@@ -253,6 +253,74 @@ public class ItemDatabaseScreen extends Screen {
         this.minecraft.setScreen(fittingRoom);
     }
 
+    private void openSetCatalog() {
+        if (this.minecraft == null) return;
+        int targetSetId = -1;
+        ItemEntry cur = getCurrentItem();
+        if (cur != null) {
+            try {
+                var parentSet = DatabaseManager.findSetByItemId(Integer.parseInt(cur.id().trim()));
+                if (parentSet != null) targetSetId = parentSet.id();
+            } catch (NumberFormatException ignored) {}
+        }
+        this.minecraft.setScreen(new SetCatalogScreen(this, targetSetId));
+    }
+
+    private com.roland.itemdatabase.data.AdminApiClient.SetRow getSetForCurrentItem() {
+        ItemEntry cur = getCurrentItem();
+        if (cur == null) return null;
+
+        // 1. Direct ID lookup in ARMOR_SETS
+        try {
+            var direct = DatabaseManager.findSetByItemId(Integer.parseInt(cur.id().trim()));
+            if (direct != null) return direct;
+        } catch (NumberFormatException ignored) {}
+
+        // 2. Clean-name match against canonical set pieces (handles "Repeat appearance" crate re-releases)
+        String curCleanName = cur.getCleanName().trim().toLowerCase();
+        if (!curCleanName.isEmpty()) {
+            for (var set : DatabaseManager.ARMOR_SETS) {
+                for (int sid : set.itemIds()) {
+                    ItemEntry canonical = DatabaseManager.findItemById(sid);
+                    if (canonical != null && canonical.getCleanName().trim().equalsIgnoreCase(curCleanName)) {
+                        return set;
+                    }
+                }
+            }
+        }
+
+        // 3. Fallback: match if item's lore explicitly names a registered set
+        String lore = (cur.itemHuman() != null ? cur.itemHuman() : "") + " " + (cur.rawData() != null ? cur.rawData() : "");
+        if (!lore.isBlank()) {
+            String lowerLore = lore.toLowerCase();
+            for (var set : DatabaseManager.ARMOR_SETS) {
+                String setName = set.name().trim().toLowerCase();
+                if (setName.length() >= 4 && lowerLore.contains(setName)) {
+                    return set;
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean isPieceOrDuplicateOwned(ItemEntry canonicalPiece) {
+        if (CollectionManager.isOwned(canonicalPiece)) return true;
+        String targetName = canonicalPiece.getCleanName().trim();
+        if (targetName.isEmpty()) return false;
+
+        for (ItemEntry it : DatabaseManager.CRATE_ITEMS.values()) {
+            if (it.getCleanName().trim().equalsIgnoreCase(targetName) && CollectionManager.isOwned(it)) {
+                return true;
+            }
+        }
+        for (ItemEntry it : DatabaseManager.MISC_ITEMS.values()) {
+            if (it.getCleanName().trim().equalsIgnoreCase(targetName) && CollectionManager.isOwned(it)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override
     public boolean isPauseScreen() {
         return false;
@@ -377,19 +445,45 @@ public class ItemDatabaseScreen extends Screen {
                     return true;
                 }
 
-                // Clicked [F] Fitting Room in the footer bar
+                // Clicked "Part of [Set Name]" pill above footer
+                var parentSet = getSetForCurrentItem();
+                if (parentSet != null) {
+                    int pillX = 130;
+                    int pillY = panelHeight - 43;
+                    int pillW = (panelWidth - 10) - pillX;
+                    int pillH = 14;
+
+                    if (localMouseX >= pillX && localMouseX <= pillX + pillW
+                            && localMouseY >= pillY && localMouseY <= pillY + pillH) {
+                        this.minecraft.setScreen(new SetCatalogScreen(this, parentSet.id()));
+                        return true;
+                    }
+                }
+
+                // Clicked [S] Sets or [F] Fitting Room in the footer bar
                 int navY = panelHeight - 24;
                 String catLabel = (currentCategory == ViewCategory.CRATES) ? "§6[Tab] §7Misc" : "§6[Tab] §7Crates";
-                String topFooter = "§e[A/D] §7Item   " + catLabel + "   §e[Drag] §7Move   §d[F] §7Fitting Room";
+                String topFooter = "§e[A/D] §7Item   " + catLabel + "   §6[S] §7Sets   §d[F] §7Fitting Room";
                 int footerTotalW = this.font.width(topFooter);
                 int footerStartX = (panelWidth - footerTotalW) / 2;
+
                 int fitLabelW = this.font.width("§d[F] §7Fitting Room");
                 int fitStartX = footerStartX + footerTotalW - fitLabelW;
 
-                if (localMouseX >= fitStartX - 2 && localMouseX <= fitStartX + fitLabelW + 2
-                        && localMouseY >= navY + 1 && localMouseY <= navY + 11) {
-                    openFittingRoom();
-                    return true;
+                int setsLabelW = this.font.width("§6[S] §7Sets");
+                int gapW = this.font.width("   ");
+                int setsEndX = fitStartX - gapW;
+                int setsStartX = setsEndX - setsLabelW;
+
+                if (localMouseY >= navY + 1 && localMouseY <= navY + 11) {
+                    if (localMouseX >= setsStartX - 2 && localMouseX <= setsEndX + 2) {
+                        openSetCatalog();
+                        return true;
+                    }
+                    if (localMouseX >= fitStartX - 2 && localMouseX <= fitStartX + fitLabelW + 2) {
+                        openFittingRoom();
+                        return true;
+                    }
                 }
             }
         }
@@ -472,6 +566,12 @@ public class ItemDatabaseScreen extends Screen {
         // Open Fitting Room with F
         if (keyCode == GLFW.GLFW_KEY_F) {
             openFittingRoom();
+            return true;
+        }
+
+        // Open Armor Set Showcase with S
+        if (keyCode == GLFW.GLFW_KEY_S) {
+            openSetCatalog();
             return true;
         }
 
@@ -678,8 +778,9 @@ public class ItemDatabaseScreen extends Screen {
             }
             lineY += 12;
 
+            var parentSet = getSetForCurrentItem();
             int viewTop = lineY;
-            int viewBottom = panelHeight - 32;
+            int viewBottom = panelHeight - (parentSet != null ? 47 : 32);
             int viewHeight = viewBottom - viewTop;
 
             int maxTextWidth = panelWidth - 146;
@@ -830,6 +931,36 @@ public class ItemDatabaseScreen extends Screen {
                 graphics.fill(barX, barY, barX + 3, barY + barHeight, 0xFFAB47BC);
             }
 
+            // --- "Part of Set" Clickable Pill ---
+            if (parentSet != null) {
+                int ownedInSet = 0;
+                for (int sid : parentSet.itemIds()) {
+                    ItemEntry piece = DatabaseManager.findItemById(sid);
+                    if (piece != null && isPieceOrDuplicateOwned(piece)) {
+                        ownedInSet++;
+                    }
+                }
+                int totalInSet = parentSet.itemIds().size();
+                String countColor = (totalInSet > 0 && ownedInSet >= totalInSet) ? "§a" : "§e";
+
+                int pillX = textX;
+                int pillY = panelHeight - 43;
+                int pillW = (panelWidth - 10) - textX;
+                int pillH = 14;
+
+                boolean pillHovered = localMouseX >= pillX && localMouseX <= pillX + pillW
+                        && localMouseY >= pillY && localMouseY <= pillY + pillH;
+
+                graphics.fill(pillX, pillY, pillX + pillW, pillY + pillH, pillHovered ? 0x668B2582 : 0x444A1A5E);
+                graphics.outline(pillX, pillY, pillW, pillH, pillHovered ? 0xFFFFD700 : 0xFFFFAA00);
+
+                String pillText = "§6✦ §f" + parentSet.name() + " " + countColor + "(" + ownedInSet + "/" + totalInSet + ") §7— §eView Set";
+                if (this.font.width(pillText) > pillW - 8) {
+                    pillText = "§6✦ §f" + parentSet.name() + " " + countColor + "(" + ownedInSet + "/" + totalInSet + ")";
+                }
+                graphics.centeredText(this.font, Component.literal(pillText), pillX + (pillW / 2), pillY + 3, 0xFFFFFFFF);
+            }
+
             // --- Footer Navigation Prompt ---
             int navY = panelHeight - 24;
             graphics.horizontalLine(10, panelWidth - 10, navY, 0xFF3D1E4E);
@@ -839,7 +970,7 @@ public class ItemDatabaseScreen extends Screen {
 
             graphics.centeredText(
                     this.font,
-                    Component.literal("§e[A/D] §7Item   " + catLabel + "   §e[Drag] §7Move   §d[F] §7Fitting Room"),
+                    Component.literal("§e[A/D] §7Item   " + catLabel + "   §6[S] §7Sets   §d[F] §7Fitting Room"),
                     panelWidth / 2,
                     navY + 3,
                     0xFFFFFFFF

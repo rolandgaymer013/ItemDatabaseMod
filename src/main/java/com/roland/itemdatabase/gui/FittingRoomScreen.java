@@ -116,6 +116,17 @@ public class FittingRoomScreen extends Screen {
         }
     }
 
+    public void equipFullSet(List<ItemEntry> setEntries) {
+        if (setEntries == null) return;
+        for (EquipmentSlot slot : new EquipmentSlot[]{EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
+            this.currentLoadout.put(slot, ItemStack.EMPTY);
+            this.currentEntries.remove(slot);
+        }
+        for (ItemEntry entry : setEntries) {
+            equipItemFromCatalog(entry);
+        }
+    }
+
     @Override
     protected void init() {
         super.init();
@@ -484,7 +495,7 @@ public class FittingRoomScreen extends Screen {
             } else {
                 this.yawVelocity = 0.0f;
                 if (this.autoRotate) {
-                    this.playerYaw = (this.playerYaw + 0.45f * dt) % 360.0f;
+                    this.playerYaw = (this.playerYaw + 1.10f * dt) % 360.0f;
                 }
             }
 
