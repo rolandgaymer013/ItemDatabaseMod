@@ -4,6 +4,7 @@ import com.mojang.blaze3d.platform.InputConstants;
 import com.roland.itemdatabase.data.DatabaseManager;
 import com.roland.itemdatabase.data.ItemDatabaseCommand;
 import com.roland.itemdatabase.data.ItemEntry;
+import com.roland.itemdatabase.data.ItemTooltipHandler;
 import com.roland.itemdatabase.data.RawDataParser;
 import com.roland.itemdatabase.data.UpdateChecker;
 import com.roland.itemdatabase.data.WishlistChatListener;
@@ -54,6 +55,7 @@ public class ItemDatabaseClient implements ClientModInitializer {
         // 2. Register client-side commands and chat packet listeners
         ItemDatabaseCommand.register();
         WishlistChatListener.register();
+        ItemTooltipHandler.register();
 
         // 3. Check for GitHub/mod update releases upon world or server join
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {

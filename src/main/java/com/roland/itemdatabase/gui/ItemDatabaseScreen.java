@@ -143,6 +143,38 @@ public class ItemDatabaseScreen extends Screen {
     private CollectionFilter collectionFilter = CollectionFilter.ALL;
     private int expandedCollectionCrateId = -1;
 
+    // Per-frame render caches for Collection Mode to prevent main-thread stalls
+    private final Set<String> cachedOwnedKeys = new HashSet<>();
+    private final Set<String> cachedWishlistKeys = new HashSet<>();
+
+    private String getCollectionCacheKey(ItemEntry it) {
+        return (it.isCrateItem() ? "crate_" : "misc_") + it.id();
+    }
+
+    /** Rebuilds per-screen O(1) lookup sets for owned and wishlisted items. */
+    private void rebuildCollectionRenderCache() {
+        this.cachedOwnedKeys.clear();
+        this.cachedWishlistKeys.clear();
+        for (ItemEntry it : DatabaseManager.CRATE_ITEMS.values()) {
+            String key = getCollectionCacheKey(it);
+            if (CollectionManager.isOwned(it)) this.cachedOwnedKeys.add(key);
+            if (CollectionManager.isWishlisted(it)) this.cachedWishlistKeys.add(key);
+        }
+        for (ItemEntry it : DatabaseManager.MISC_ITEMS.values()) {
+            String key = getCollectionCacheKey(it);
+            if (CollectionManager.isOwned(it)) this.cachedOwnedKeys.add(key);
+            if (CollectionManager.isWishlisted(it)) this.cachedWishlistKeys.add(key);
+        }
+    }
+
+    private boolean isItemOwnedCached(ItemEntry it) {
+        return it != null && this.cachedOwnedKeys.contains(getCollectionCacheKey(it));
+    }
+
+    private boolean isItemWishlistedCached(ItemEntry it) {
+        return it != null && this.cachedWishlistKeys.contains(getCollectionCacheKey(it));
+    }
+
     // Click target tracking for drawer rows
     private record ClickableRow(int x, int y, int width, int height, Runnable action) {}
     private final List<ClickableRow> drawerClickables = new ArrayList<>();
@@ -175,6 +207,7 @@ public class ItemDatabaseScreen extends Screen {
      * Synchronizes and filters the internal item list based on the active view category.
      */
     private void updateItemList() {
+        rebuildCollectionRenderCache();
         this.items.clear();
 
         // Ensure crate item mappings exist if data loaded asynchronously
@@ -204,8 +237,8 @@ public class ItemDatabaseScreen extends Screen {
                 combined.addAll(DatabaseManager.MISC_ITEMS.values());
 
                 for (ItemEntry it : combined) {
-                    boolean owned = CollectionManager.isOwned(it);
-                    boolean wishlisted = CollectionManager.isWishlisted(it);
+                    boolean owned = isItemOwnedCached(it);
+                    boolean wishlisted = isItemWishlistedCached(it);
 
                     if (collectionFilter == CollectionFilter.ALL) {
                         this.items.add(it);
@@ -243,6 +276,7 @@ public class ItemDatabaseScreen extends Screen {
         return items.get(currentIndex);
     }
 
+    /** Opens the 3D Fitting Room and auto-equips the current item if it targets an equipment slot. */
     private void openFittingRoom() {
         if (this.minecraft == null) return;
         FittingRoomScreen fittingRoom = new FittingRoomScreen(this);
@@ -253,6 +287,7 @@ public class ItemDatabaseScreen extends Screen {
         this.minecraft.setScreen(fittingRoom);
     }
 
+    /** Opens the Armor Set Showcase, focusing the current item's parent set when applicable. */
     private void openSetCatalog() {
         if (this.minecraft == null) return;
         int targetSetId = -1;
@@ -264,6 +299,23 @@ public class ItemDatabaseScreen extends Screen {
             } catch (NumberFormatException ignored) {}
         }
         this.minecraft.setScreen(new SetCatalogScreen(this, targetSetId));
+    }
+
+    /** Opens the Global Collection Progress Dashboard and jumps to any clicked item on return. */
+    private void openCollectionDashboard() {
+        if (this.minecraft == null) return;
+        this.minecraft.setScreen(new CollectionDashboardScreen(this, targetItem -> {
+            if (targetItem == null) return;
+            this.currentCategory = targetItem.isCrateItem() ? ViewCategory.CRATES : ViewCategory.MISC;
+            updateItemList();
+            for (int i = 0; i < this.items.size(); i++) {
+                if (this.items.get(i).id().equals(targetItem.id())) {
+                    this.currentIndex = i;
+                    this.scrollOffset = 0;
+                    break;
+                }
+            }
+        }));
     }
 
     private com.roland.itemdatabase.data.AdminApiClient.SetRow getSetForCurrentItem() {
@@ -304,17 +356,17 @@ public class ItemDatabaseScreen extends Screen {
     }
 
     private boolean isPieceOrDuplicateOwned(ItemEntry canonicalPiece) {
-        if (CollectionManager.isOwned(canonicalPiece)) return true;
+        if (isItemOwnedCached(canonicalPiece)) return true;
         String targetName = canonicalPiece.getCleanName().trim();
         if (targetName.isEmpty()) return false;
 
         for (ItemEntry it : DatabaseManager.CRATE_ITEMS.values()) {
-            if (it.getCleanName().trim().equalsIgnoreCase(targetName) && CollectionManager.isOwned(it)) {
+            if (it.getCleanName().trim().equalsIgnoreCase(targetName) && isItemOwnedCached(it)) {
                 return true;
             }
         }
         for (ItemEntry it : DatabaseManager.MISC_ITEMS.values()) {
-            if (it.getCleanName().trim().equalsIgnoreCase(targetName) && CollectionManager.isOwned(it)) {
+            if (it.getCleanName().trim().equalsIgnoreCase(targetName) && isItemOwnedCached(it)) {
                 return true;
             }
         }
@@ -338,6 +390,7 @@ public class ItemDatabaseScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+        if (this.minecraft == null) return false;
         long windowHandle = this.minecraft.getWindow().handle();
         boolean isCtrlDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS
                 || GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
@@ -434,6 +487,7 @@ public class ItemDatabaseScreen extends Screen {
                 if (localMouseX >= artBoxX && localMouseX <= artBoxX + btnW
                         && localMouseY >= toggleBoxY && localMouseY <= toggleBoxY + btnH) {
                     CollectionManager.toggleOwned(cur);
+                    rebuildCollectionRenderCache();
                     return true;
                 }
 
@@ -442,6 +496,7 @@ public class ItemDatabaseScreen extends Screen {
                 if (localMouseX >= wishX && localMouseX <= wishX + btnW
                         && localMouseY >= toggleBoxY && localMouseY <= toggleBoxY + btnH) {
                     CollectionManager.toggleWishlist(cur);
+                    rebuildCollectionRenderCache();
                     return true;
                 }
 
@@ -460,18 +515,22 @@ public class ItemDatabaseScreen extends Screen {
                     }
                 }
 
-                // Clicked [S] Sets or [F] Fitting Room in the footer bar
+                // Clicked [S] Sets, [F] Fitting Room, or [V] Compare in the footer bar
                 int navY = panelHeight - 24;
                 String catLabel = (currentCategory == ViewCategory.CRATES) ? "§6[Tab] §7Misc" : "§6[Tab] §7Crates";
-                String topFooter = "§e[A/D] §7Item   " + catLabel + "   §6[S] §7Sets   §d[F] §7Fitting Room";
+                String topFooter = "§e[A/D] §7Item   " + catLabel + "   §6[S] §7Sets   §d[F] §7Fitting Room   §b[V] §7Compare";
                 int footerTotalW = this.font.width(topFooter);
                 int footerStartX = (panelWidth - footerTotalW) / 2;
+                int gapW = this.font.width("   ");
+
+                int compLabelW = this.font.width("§b[V] §7Compare");
+                int compStartX = footerStartX + footerTotalW - compLabelW;
 
                 int fitLabelW = this.font.width("§d[F] §7Fitting Room");
-                int fitStartX = footerStartX + footerTotalW - fitLabelW;
+                int fitEndX = compStartX - gapW;
+                int fitStartX = fitEndX - fitLabelW;
 
                 int setsLabelW = this.font.width("§6[S] §7Sets");
-                int gapW = this.font.width("   ");
                 int setsEndX = fitStartX - gapW;
                 int setsStartX = setsEndX - setsLabelW;
 
@@ -480,8 +539,13 @@ public class ItemDatabaseScreen extends Screen {
                         openSetCatalog();
                         return true;
                     }
-                    if (localMouseX >= fitStartX - 2 && localMouseX <= fitStartX + fitLabelW + 2) {
+                    if (localMouseX >= fitStartX - 2 && localMouseX <= fitEndX + 2) {
                         openFittingRoom();
+                        return true;
+                    }
+                    if (localMouseX >= compStartX - 2 && localMouseX <= compStartX + compLabelW + 2) {
+                        ComparisonScreen.pinTarget(ComparisonScreen.CompareTarget.fromItem(cur));
+                        this.minecraft.setScreen(new ComparisonScreen(this));
                         return true;
                     }
                 }
@@ -550,6 +614,7 @@ public class ItemDatabaseScreen extends Screen {
             ItemEntry current = getCurrentItem();
             if (current != null) {
                 CollectionManager.toggleOwned(current);
+                rebuildCollectionRenderCache();
                 return true;
             }
         }
@@ -559,6 +624,7 @@ public class ItemDatabaseScreen extends Screen {
             ItemEntry current = getCurrentItem();
             if (current != null) {
                 CollectionManager.toggleWishlist(current);
+                rebuildCollectionRenderCache();
                 return true;
             }
         }
@@ -572,6 +638,21 @@ public class ItemDatabaseScreen extends Screen {
         // Open Armor Set Showcase with S
         if (keyCode == GLFW.GLFW_KEY_S) {
             openSetCatalog();
+            return true;
+        }
+
+        if (event.key() == GLFW.GLFW_KEY_V) {
+            ItemEntry cur = getCurrentItem();
+            if (cur != null && this.minecraft != null) {
+                ComparisonScreen.pinTarget(ComparisonScreen.CompareTarget.fromItem(cur));
+                this.minecraft.setScreen(new ComparisonScreen(this));
+                return true;
+            }
+        }
+
+        // Open Collection Progress Dashboard with G
+        if (keyCode == GLFW.GLFW_KEY_G) {
+            openCollectionDashboard();
             return true;
         }
 
@@ -589,6 +670,7 @@ public class ItemDatabaseScreen extends Screen {
     @Override
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
         super.extractRenderState(graphics, mouseX, mouseY, a);
+        if (this.minecraft == null) return;
 
         // --- Mouse Drag Handling ---
         long windowHandle = this.minecraft.getWindow().handle();
@@ -732,7 +814,7 @@ public class ItemDatabaseScreen extends Screen {
             int btnH = 13;
 
             // [Space] Owned Button
-            boolean isOwned = CollectionManager.isOwned(item);
+            boolean isOwned = isItemOwnedCached(item);
             int ownedBg = isOwned ? 0xDD2E7D32 : 0xB01C0826;
             int ownedBorder = isOwned ? 0xFFA5D6A7 : 0xFF5C2974;
             graphics.fill(artBoxX, toggleBoxY, artBoxX + btnW, toggleBoxY + btnH, ownedBg);
@@ -742,7 +824,7 @@ public class ItemDatabaseScreen extends Screen {
 
             // [W] Wishlist Button
             int wishX = artBoxX + btnW + buttonGap;
-            boolean isWish = CollectionManager.isWishlisted(item);
+            boolean isWish = isItemWishlistedCached(item);
             int wishBg = isWish ? 0xDD996515 : 0xB01C0826;
             int wishBorder = isWish ? 0xFFFFD700 : 0xFF5C2974;
             graphics.fill(wishX, toggleBoxY, wishX + btnW, toggleBoxY + btnH, wishBg);
@@ -970,7 +1052,7 @@ public class ItemDatabaseScreen extends Screen {
 
             graphics.centeredText(
                     this.font,
-                    Component.literal("§e[A/D] §7Item   " + catLabel + "   §6[S] §7Sets   §d[F] §7Fitting Room"),
+                    Component.literal("§e[A/D] §7Item   " + catLabel + "   §6[S] §7Sets   §d[F] §7Fitting Room   §b[V] §7Compare"),
                     panelWidth / 2,
                     navY + 3,
                     0xFFFFFFFF
@@ -1232,7 +1314,7 @@ public class ItemDatabaseScreen extends Screen {
                                 graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
                             }
 
-                            boolean owned = CollectionManager.isOwned(item);
+                            boolean owned = isItemOwnedCached(item);
                             String statusIcon = owned ? "§a✔ " : "§8• ";
                             String prefix = isCurrent ? "  §e▶ " : "  " + statusIcon;
 
@@ -1379,7 +1461,7 @@ public class ItemDatabaseScreen extends Screen {
                                 graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
                             }
 
-                            boolean owned = CollectionManager.isOwned(item);
+                            boolean owned = isItemOwnedCached(item);
                             String statusIcon = owned ? "§a✔ " : "§8• ";
                             String prefix = isCurrent ? "  §e▶ " : "  " + statusIcon;
 
@@ -1493,7 +1575,7 @@ public class ItemDatabaseScreen extends Screen {
                                 graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
                             }
 
-                            boolean owned = CollectionManager.isOwned(item);
+                            boolean owned = isItemOwnedCached(item);
                             String statusIcon = owned ? "§a✔ " : "§8• ";
                             String prefix = isCurrent ? "  §e▶ " : "  " + statusIcon;
 
@@ -1539,19 +1621,22 @@ public class ItemDatabaseScreen extends Screen {
             int filterCount = 0;
             for (ItemEntry it : totalAll) {
                 if (collectionFilter == CollectionFilter.WISHLIST) {
-                    if (CollectionManager.isWishlisted(it)) filterCount++;
+                    if (isItemWishlistedCached(it)) filterCount++;
                 } else if (collectionFilter == CollectionFilter.MISSING) {
-                    if (!CollectionManager.isOwned(it)) filterCount++;
+                    if (!isItemOwnedCached(it)) filterCount++;
                 } else {
-                    if (CollectionManager.isOwned(it)) filterCount++;
+                    if (isItemOwnedCached(it)) filterCount++;
                 }
             }
 
             int percent = totalCount > 0 ? (int) ((filterCount / (float) totalCount) * 100) : 0;
 
-            // --- Progress Header ---
-            graphics.fill(drawerX + 4, tabY, drawerX + drawerWidth - 4, tabY + 14, 0xFF220D30);
-            graphics.outline(drawerX + 4, tabY, drawerWidth - 8, 14, 0xFF4A1A5E);
+            // --- Progress Header (Click to open full Collection Progress Dashboard) ---
+            boolean progHover = localMouseX >= drawerX + 4 && localMouseX <= drawerX + drawerWidth - 4
+                    && localMouseY >= tabY && localMouseY <= tabY + 14;
+
+            graphics.fill(drawerX + 4, tabY, drawerX + drawerWidth - 4, tabY + 14, progHover ? 0xFF331447 : 0xFF220D30);
+            graphics.outline(drawerX + 4, tabY, drawerWidth - 8, 14, progHover ? 0xFFFFD700 : 0xFF4A1A5E);
 
             int barWidth = (int) (((drawerWidth - 12) * filterCount) / (float) Math.max(1, totalCount));
             if (barWidth > 0) {
@@ -1559,11 +1644,13 @@ public class ItemDatabaseScreen extends Screen {
             }
             graphics.centeredText(
                     this.font,
-                    Component.literal("§6" + filterCount + "§7/§f" + totalCount + " §e(" + percent + "%)"),
+                    Component.literal("§6" + filterCount + "§7/§f" + totalCount + " §e(" + percent + "%) §8[★ Dashboard]"),
                     drawerX + (drawerWidth / 2),
                     tabY + 3,
                     0xFFFFFFFF
             );
+
+            drawerClickables.add(new ClickableRow(drawerX + 4, tabY, drawerWidth - 8, 14, this::openCollectionDashboard));
 
             // --- Filter Buttons: [ All | Owned | Missing | Wishlist ] ---
             int filterY = tabY + 17;
@@ -1609,8 +1696,8 @@ public class ItemDatabaseScreen extends Screen {
                     int tabMatchingItemCount = 0;
                     for (CrateEntry crate : tabCrates) {
                         List<ItemEntry> crateMatching = crate.items().stream().filter(it -> {
-                            boolean owned = CollectionManager.isOwned(it);
-                            boolean wish = CollectionManager.isWishlisted(it);
+                            boolean owned = isItemOwnedCached(it);
+                            boolean wish = isItemWishlistedCached(it);
                             if (collectionFilter == CollectionFilter.OWNED && !owned) return false;
                             if (collectionFilter == CollectionFilter.MISSING && owned) return false;
                             if (collectionFilter == CollectionFilter.WISHLIST && !wish) return false;
@@ -1652,8 +1739,8 @@ public class ItemDatabaseScreen extends Screen {
                     int tabMatchingItemCount = 0;
                     for (MiscGroupEntry group : tabGroups) {
                         List<ItemEntry> groupMatching = group.items().stream().filter(it -> {
-                            boolean owned = CollectionManager.isOwned(it);
-                            boolean wish = CollectionManager.isWishlisted(it);
+                            boolean owned = isItemOwnedCached(it);
+                            boolean wish = isItemWishlistedCached(it);
                             if (collectionFilter == CollectionFilter.OWNED && !owned) return false;
                             if (collectionFilter == CollectionFilter.MISSING && owned) return false;
                             if (collectionFilter == CollectionFilter.WISHLIST && !wish) return false;
@@ -1708,8 +1795,8 @@ public class ItemDatabaseScreen extends Screen {
                     List<CrateEntry> activeTabCrates = new ArrayList<>();
                     for (CrateEntry c : tabCrates) {
                         boolean hasMatches = c.items().stream().anyMatch(it -> {
-                            boolean owned = CollectionManager.isOwned(it);
-                            boolean wish = CollectionManager.isWishlisted(it);
+                            boolean owned = isItemOwnedCached(it);
+                            boolean wish = isItemWishlistedCached(it);
                             if (collectionFilter == CollectionFilter.OWNED && !owned) return false;
                             if (collectionFilter == CollectionFilter.MISSING && owned) return false;
                             if (collectionFilter == CollectionFilter.WISHLIST && !wish) return false;
@@ -1745,17 +1832,17 @@ public class ItemDatabaseScreen extends Screen {
                             int crateCount = 0;
                             for (ItemEntry it : crate.items()) {
                                 if (collectionFilter == CollectionFilter.WISHLIST) {
-                                    if (CollectionManager.isWishlisted(it)) crateCount++;
+                                    if (isItemWishlistedCached(it)) crateCount++;
                                 } else if (collectionFilter == CollectionFilter.MISSING) {
-                                    if (!CollectionManager.isOwned(it)) crateCount++;
+                                    if (!isItemOwnedCached(it)) crateCount++;
                                 } else {
-                                    if (CollectionManager.isOwned(it)) crateCount++;
+                                    if (isItemOwnedCached(it)) crateCount++;
                                 }
                             }
 
                             List<ItemEntry> crateMatching = crate.items().stream().filter(it -> {
-                                boolean owned = CollectionManager.isOwned(it);
-                                boolean wish = CollectionManager.isWishlisted(it);
+                                boolean owned = isItemOwnedCached(it);
+                                boolean wish = isItemWishlistedCached(it);
                                 if (collectionFilter == CollectionFilter.OWNED && !owned) return false;
                                 if (collectionFilter == CollectionFilter.MISSING && owned) return false;
                                 if (collectionFilter == CollectionFilter.WISHLIST && !wish) return false;
@@ -1804,8 +1891,8 @@ public class ItemDatabaseScreen extends Screen {
                                             graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
                                         }
 
-                                        boolean owned = CollectionManager.isOwned(item);
-                                        boolean wish = CollectionManager.isWishlisted(item);
+                                        boolean owned = isItemOwnedCached(item);
+                                        boolean wish = isItemWishlistedCached(item);
                                         String statusIcon = (collectionFilter == CollectionFilter.WISHLIST)
                                                 ? (wish ? "§6★ " : "§8• ")
                                                 : (owned ? "§a✔ " : "§8• ");
@@ -1876,8 +1963,8 @@ public class ItemDatabaseScreen extends Screen {
                     List<MiscGroupEntry> activeTabGroups = new ArrayList<>();
                     for (MiscGroupEntry g : tabGroups) {
                         boolean hasMatches = g.items().stream().anyMatch(it -> {
-                            boolean owned = CollectionManager.isOwned(it);
-                            boolean wish = CollectionManager.isWishlisted(it);
+                            boolean owned = isItemOwnedCached(it);
+                            boolean wish = isItemWishlistedCached(it);
                             if (collectionFilter == CollectionFilter.OWNED && !owned) return false;
                             if (collectionFilter == CollectionFilter.MISSING && owned) return false;
                             if (collectionFilter == CollectionFilter.WISHLIST && !wish) return false;
@@ -1913,17 +2000,17 @@ public class ItemDatabaseScreen extends Screen {
                             int groupCount = 0;
                             for (ItemEntry it : group.items()) {
                                 if (collectionFilter == CollectionFilter.WISHLIST) {
-                                    if (CollectionManager.isWishlisted(it)) groupCount++;
+                                    if (isItemWishlistedCached(it)) groupCount++;
                                 } else if (collectionFilter == CollectionFilter.MISSING) {
-                                    if (!CollectionManager.isOwned(it)) groupCount++;
+                                    if (!isItemOwnedCached(it)) groupCount++;
                                 } else {
-                                    if (CollectionManager.isOwned(it)) groupCount++;
+                                    if (isItemOwnedCached(it)) groupCount++;
                                 }
                             }
 
                             List<ItemEntry> groupMatching = group.items().stream().filter(it -> {
-                                boolean owned = CollectionManager.isOwned(it);
-                                boolean wish = CollectionManager.isWishlisted(it);
+                                boolean owned = isItemOwnedCached(it);
+                                boolean wish = isItemWishlistedCached(it);
                                 if (collectionFilter == CollectionFilter.OWNED && !owned) return false;
                                 if (collectionFilter == CollectionFilter.MISSING && owned) return false;
                                 if (collectionFilter == CollectionFilter.WISHLIST && !wish) return false;
@@ -1973,8 +2060,8 @@ public class ItemDatabaseScreen extends Screen {
                                             graphics.fill(drawerX + 6, currentY - 1, drawerX + drawerWidth - 6, currentY + 10, 0x35FFFFFF);
                                         }
 
-                                        boolean owned = CollectionManager.isOwned(item);
-                                        boolean wish = CollectionManager.isWishlisted(item);
+                                        boolean owned = isItemOwnedCached(item);
+                                        boolean wish = isItemWishlistedCached(item);
                                         String statusIcon = (collectionFilter == CollectionFilter.WISHLIST)
                                                 ? (wish ? "§6★ " : "§8• ")
                                                 : (owned ? "§a✔ " : "§8• ");

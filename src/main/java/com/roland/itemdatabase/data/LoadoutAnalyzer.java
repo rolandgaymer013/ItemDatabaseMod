@@ -11,12 +11,21 @@ import net.minecraft.world.item.component.ItemAttributeModifiers;
 import net.minecraft.world.item.component.ItemLore;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Shared stat, attribute, passive trait, and armor-set completion analyzer for BlossomCraft gear.
+ * <p>
+ * Used by {@code FittingRoomScreen} and {@code ComparisonScreen} to aggregate armor, toughness,
+ * attack damage, attack speed, bonus health, potion traits, and full-set bonuses across
+ * equipped or previewed loadouts.
+ */
 public class LoadoutAnalyzer {
 
     private static final Pattern EFFECT_PATTERN = Pattern.compile(
@@ -26,12 +35,23 @@ public class LoadoutAnalyzer {
     private static final Pattern DOUBLE_STAT_PATTERN = Pattern.compile("\\+?(\\d+(\\.\\d+)?)");
 
     private static final Map<String, Integer> ROMAN_TO_INT = Map.of(
-            "I", 1, "II", 2, "III", 3, "IV", 4, "V", 5
+            "I", 1, "II", 2, "III", 3, "IV", 4, "V", 5,
+            "VI", 6, "VII", 7, "VIII", 8, "IX", 9, "X", 10
     );
     private static final Map<Integer, String> INT_TO_ROMAN = Map.of(
-            1, "I", 2, "II", 3, "III", 4, "IV", 5, "V"
+            1, "I", 2, "II", 3, "III", 4, "IV", 5, "V",
+            6, "VI", 7, "VII", 8, "VIII", 9, "IX", 10, "X"
     );
 
+    /**
+     * Represents a single equipped or passive item input to be evaluated by {@link #analyze(List)}.
+     *
+     * @param stack       Resolved Minecraft {@link ItemStack}.
+     * @param entry       Optional database {@link ItemEntry} (used for authoritative RawData lore).
+     * @param slot        Target {@link EquipmentSlot}, or {@code null} for passive inventory charms.
+     * @param isPassive   True if evaluated as a passive inventory/hotbar charm rather than held/worn gear.
+     * @param sourceLabel Optional display label identifying the item or slot providing traits.
+     */
     public record SlotInput(
             ItemStack stack,
             ItemEntry entry,
@@ -40,6 +60,9 @@ public class LoadoutAnalyzer {
             String sourceLabel
     ) {}
 
+    /**
+     * Represents a parsed passive potion effect or special gear trait.
+     */
     public record TraitInfo(
             String effectName,
             int level,
@@ -48,6 +71,7 @@ public class LoadoutAnalyzer {
             String customAction,
             String sourceLabel
     ) {
+        /** Formats this trait into a colored single-line display string. */
         public String format(boolean includeSource) {
             String srcSuffix = (includeSource && sourceLabel != null && !sourceLabel.isEmpty())
                     ? " §7(" + sourceLabel + ")"
@@ -60,6 +84,9 @@ public class LoadoutAnalyzer {
         }
     }
 
+    /**
+     * Aggregated combat, defense, and passive trait totals for an analyzed loadout.
+     */
     public record LoadoutSummary(
             int totalArmor,
             float totalToughness,
@@ -68,6 +95,7 @@ public class LoadoutAnalyzer {
             int totalBonusHealth,
             List<TraitInfo> traits
     ) {
+        /** Converts consolidated traits into formatted chat/GUI {@link Component} lines. */
         public List<Component> toTraitComponents(boolean includeSource) {
             List<Component> list = new ArrayList<>();
             for (TraitInfo trait : traits) {
@@ -80,6 +108,62 @@ public class LoadoutAnalyzer {
         }
     }
 
+    /**
+     * Checks whether the four armor slots form a complete registered BlossomCraft armor set,
+     * matching by either direct database ID or normalized clean item name.
+     *
+     * @return Matching {@link AdminApiClient.SetRow}, or {@code null} if no complete set is worn.
+     */
+    public static AdminApiClient.SetRow findCompletedSet(Map<EquipmentSlot, ItemEntry> equippedArmor, Map<EquipmentSlot, ItemStack> equippedStacks) {
+        Set<String> equippedNames = new HashSet<>();
+        Set<Integer> equippedIds = new HashSet<>();
+
+        for (EquipmentSlot slot : new EquipmentSlot[]{EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
+            ItemEntry entry = equippedArmor != null ? equippedArmor.get(slot) : null;
+            if (entry != null) {
+                try {
+                    equippedIds.add(Integer.parseInt(entry.id().trim()));
+                } catch (NumberFormatException ignored) {}
+                String clean = entry.getCleanName().trim().toLowerCase();
+                if (!clean.isEmpty()) equippedNames.add(clean);
+            } else if (equippedStacks != null) {
+                ItemStack stack = equippedStacks.get(slot);
+                if (stack != null && !stack.isEmpty()) {
+                    String clean = StringUtil.stripColor(stack.getHoverName().getString())
+                            .replaceAll("[^a-zA-Z0-9\\s'\\-]", "")
+                            .trim()
+                            .toLowerCase();
+                    if (!clean.isEmpty()) equippedNames.add(clean);
+                }
+            }
+        }
+
+        if (equippedNames.isEmpty() && equippedIds.isEmpty()) return null;
+
+        for (AdminApiClient.SetRow set : DatabaseManager.ARMOR_SETS) {
+            if (set.itemIds().isEmpty()) continue;
+            int matched = 0;
+            for (int reqId : set.itemIds()) {
+                if (equippedIds.contains(reqId)) {
+                    matched++;
+                    continue;
+                }
+                ItemEntry reqEntry = DatabaseManager.findItemById(reqId);
+                if (reqEntry != null && equippedNames.contains(reqEntry.getCleanName().trim().toLowerCase())) {
+                    matched++;
+                }
+            }
+            if (matched >= set.itemIds().size()) {
+                return set;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Parses custom BlossomCraft lore stats, vanilla attribute modifiers, and passive potion
+     * effects across all provided {@link SlotInput} entries.
+     */
     public static LoadoutSummary analyze(List<SlotInput> inputs) {
         int totalArmor = 0;
         float totalToughness = 0.0f;
@@ -107,6 +191,7 @@ public class LoadoutAnalyzer {
                 }
             }
 
+            // Group multi-line '>' lore blocks into single logical sentences for accurate parsing
             List<String> combinedSections = new ArrayList<>();
             StringBuilder currentBlock = null;
 
@@ -152,6 +237,7 @@ public class LoadoutAnalyzer {
                 String clean = rawSection.replaceAll("[\"']+$", "").trim();
                 String lower = clean.toLowerCase();
 
+                // Skip active click abilities or AoE ally buffs that are not passive self-stats
                 if (lower.contains("everyone around")
                         || lower.contains("all players around")
                         || lower.contains("give everyone")
@@ -220,6 +306,7 @@ public class LoadoutAnalyzer {
                 }
             }
 
+            // Fallback to vanilla item attribute modifiers when no custom lore stats were parsed
             if (!parsedFromLore && slot != null) {
                 ItemAttributeModifiers modifiers = stack.get(DataComponents.ATTRIBUTE_MODIFIERS);
                 if (modifiers != null && !modifiers.modifiers().isEmpty()) {
@@ -234,6 +321,8 @@ public class LoadoutAnalyzer {
                                 totalToughness += (float) amount;
                             } else if (attr.is(Attributes.ATTACK_DAMAGE)) {
                                 totalAttackDamage += amount;
+                            } else if (attr.is(Attributes.ATTACK_SPEED) && slot == EquipmentSlot.MAINHAND) {
+                                totalAttackSpeedBonus += (int) Math.round((amount / 4.0) * 100.0);
                             } else if (attr.is(Attributes.MAX_HEALTH)) {
                                 totalBonusHealth += (int) amount;
                             }
@@ -242,6 +331,7 @@ public class LoadoutAnalyzer {
                 }
             }
 
+            // Special offhand utility items
             if (slot == EquipmentSlot.OFFHAND) {
                 if (stack.is(Items.SHIELD)) {
                     consolidatedTraits.putIfAbsent("custom:shield_deflect", new TraitInfo("Projectile Deflection", 1, "", "Offhand", "Projectile Deflection", sourceLabel));

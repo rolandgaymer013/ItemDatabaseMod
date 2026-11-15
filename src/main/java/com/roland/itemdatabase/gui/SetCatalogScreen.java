@@ -35,11 +35,21 @@ import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Interactive Armor Set Showcase screen for BlossomCraft.
+ * <p>
+ * Displays a searchable directory of registered armor sets with completion filters,
+ * an orbiting 3D mannequin wearing the selected set, clickable piece inspection slots,
+ * aggregated set stats, full-set bonus descriptions, and one-click Fitting Room /
+ * Comparison / Missing-Piece Wishlist actions.
+ */
 public class SetCatalogScreen extends Screen {
 
+    /** Completion filter tabs for the left armor-set sidebar. */
     public enum SetFilter {
         ALL("All"),
         COMPLETED("4/4"),
@@ -55,7 +65,7 @@ public class SetCatalogScreen extends Screen {
     private final int initialSetId;
 
     private final List<AdminApiClient.SetRow> filteredSets = new ArrayList<>();
-    private final Map<Integer, Integer> cachedOwnedCounts = new java.util.HashMap<>();
+    private final Map<Integer, Integer> cachedOwnedCounts = new HashMap<>();
     private final List<FormattedCharSequence> cachedTraitLines = new ArrayList<>();
     private int selectedSetId = -1;
     private SetFilter currentFilter = SetFilter.ALL;
@@ -89,13 +99,21 @@ public class SetCatalogScreen extends Screen {
     private Button wishlistMissingBtn;
     private Button tryFittingRoomBtn;
 
+    /** Bounds and click action for custom-rendered filter pills, list rows, and piece icons. */
     private record ClickTarget(int x, int y, int w, int h, Runnable action) {}
     private final List<ClickTarget> clickTargets = new ArrayList<>();
 
+    /** Constructs the Armor Set Showcase defaulting to the first available set. */
     public SetCatalogScreen(Screen parent) {
         this(parent, -1);
     }
 
+    /**
+     * Constructs the Armor Set Showcase, optionally pre-selecting a specific set by ID.
+     *
+     * @param parent       Parent screen to return to upon closing.
+     * @param initialSetId Target set primary key ID to select initially, or {@code -1} for default.
+     */
     public SetCatalogScreen(Screen parent, int initialSetId) {
         super(Component.literal("Armor Set Showcase"));
         this.parent = parent;
@@ -154,13 +172,14 @@ public class SetCatalogScreen extends Screen {
 
         // Bottom Action Bar
         int btnY = panelY + panelH + 6;
-        int gap = 5;
-        int wFit = 112;
-        int wWish = 106;
-        int wSpin = 68;
-        int wReset = 52;
-        int wBack = 48;
-        int totalW = wFit + wWish + wSpin + wReset + wBack + (gap * 4);
+        int gap = 4;
+        int wFit = 104;
+        int wComp = 62;
+        int wWish = 98;
+        int wSpin = 62;
+        int wReset = 46;
+        int wBack = 44;
+        int totalW = wFit + wComp + wWish + wSpin + wReset + wBack + (gap * 5);
         int startX = panelX + (panelW - totalW) / 2;
 
         this.tryFittingRoomBtn = Button.builder(Component.literal("§dTry in Fitting Room"), b -> openInFittingRoom())
@@ -168,30 +187,39 @@ public class SetCatalogScreen extends Screen {
                 .build();
         this.addRenderableWidget(this.tryFittingRoomBtn);
 
+        this.addRenderableWidget(Button.builder(Component.literal("§bCompare"), b -> {
+            AdminApiClient.SetRow active = getSelectedSet();
+            if (active != null && this.minecraft != null) {
+                ComparisonScreen.pinTarget(ComparisonScreen.CompareTarget.fromSet(active));
+                this.minecraft.setScreen(new ComparisonScreen(this));
+            }
+        }).bounds(startX + wFit + gap, btnY, wComp, 20).build());
+
         this.wishlistMissingBtn = Button.builder(Component.literal("§6★ Wishlist Missing"), b -> wishlistMissingPieces())
-                .bounds(startX + wFit + gap, btnY, wWish, 20)
+                .bounds(startX + wFit + wComp + (gap * 2), btnY, wWish, 20)
                 .build();
         this.addRenderableWidget(this.wishlistMissingBtn);
 
         this.addRenderableWidget(Button.builder(Component.literal(this.autoRotate ? "Spin: ON" : "Spin: OFF"), b -> {
             this.autoRotate = !this.autoRotate;
             b.setMessage(Component.literal(this.autoRotate ? "Spin: ON" : "Spin: OFF"));
-        }).bounds(startX + wFit + wWish + (gap * 2), btnY, wSpin, 20).build());
+        }).bounds(startX + wFit + wComp + wWish + (gap * 3), btnY, wSpin, 20).build());
 
         this.addRenderableWidget(Button.builder(Component.literal("Reset"), b -> {
             this.playerYaw = 0.0f;
             this.playerPitch = 0.0f;
             this.yawVelocity = 0.0f;
             this.pitchVelocity = 0.0f;
-        }).bounds(startX + wFit + wWish + wSpin + (gap * 3), btnY, wReset, 20).build());
+        }).bounds(startX + wFit + wComp + wWish + wSpin + (gap * 4), btnY, wReset, 20).build());
 
         this.addRenderableWidget(Button.builder(Component.literal("Back"), b -> this.onClose())
-                .bounds(startX + wFit + wWish + wSpin + wReset + (gap * 4), btnY, wBack, 20)
+                .bounds(startX + wFit + wComp + wWish + wSpin + wReset + (gap * 5), btnY, wBack, 20)
                 .build());
 
         updateActionButtons();
     }
 
+    /** Rebuilds the filtered set directory and caches piece ownership counts per set. */
     private void refreshFilteredSets(boolean applyInitialSelection) {
         this.cachedOwnedCounts.clear();
         for (AdminApiClient.SetRow set : DatabaseManager.ARMOR_SETS) {
@@ -202,7 +230,7 @@ public class SetCatalogScreen extends Screen {
 
         for (AdminApiClient.SetRow set : DatabaseManager.ARMOR_SETS) {
             int total = set.itemIds().size();
-            int owned = countOwnedPieces(set);
+            int owned = this.cachedOwnedCounts.getOrDefault(set.id(), 0);
 
             if (currentFilter == SetFilter.COMPLETED && (total == 0 || owned < total)) continue;
             if (currentFilter == SetFilter.IN_PROGRESS && (owned == 0 || owned >= total)) continue;
@@ -237,6 +265,7 @@ public class SetCatalogScreen extends Screen {
         equipSelectedSet();
     }
 
+    /** Returns the currently selected {@link AdminApiClient.SetRow}, or {@code null} if none. */
     private AdminApiClient.SetRow getSelectedSet() {
         for (AdminApiClient.SetRow set : this.filteredSets) {
             if (set.id() == this.selectedSetId) return set;
@@ -244,6 +273,7 @@ public class SetCatalogScreen extends Screen {
         return null;
     }
 
+    /** Counts how many pieces in the given set are owned (including "Repeat appearance" duplicates). */
     private int countOwnedPieces(AdminApiClient.SetRow set) {
         int owned = 0;
         for (int id : set.itemIds()) {
@@ -255,29 +285,16 @@ public class SetCatalogScreen extends Screen {
         return owned;
     }
 
+    /** O(1) ownership check via {@link CollectionManager#isOwned(ItemEntry)}. */
     private boolean isPieceOrDuplicateOwned(ItemEntry canonicalPiece) {
-        if (canonicalPiece == null) return false;
-        if (CollectionManager.isOwned(canonicalPiece)) return true;
-
-        String targetName = canonicalPiece.getCleanName().trim();
-        if (targetName.isEmpty()) return false;
-
-        for (ItemEntry it : DatabaseManager.CRATE_ITEMS.values()) {
-            if (it.getCleanName().trim().equalsIgnoreCase(targetName) && CollectionManager.isOwned(it)) {
-                return true;
-            }
-        }
-        for (ItemEntry it : DatabaseManager.MISC_ITEMS.values()) {
-            if (it.getCleanName().trim().equalsIgnoreCase(targetName) && CollectionManager.isOwned(it)) {
-                return true;
-            }
-        }
-        return false;
+        return canonicalPiece != null && CollectionManager.isOwned(canonicalPiece);
     }
 
+    /** Equips the selected set onto the 3D mannequin and pre-wraps all stat and trait lines. */
     private void equipSelectedSet() {
         this.setEntriesBySlot.clear();
         this.orderedSetPieces.clear();
+        this.cachedTraitLines.clear();
         this.traitsScrollOffset = 0;
 
         if (this.dummy != null) {
@@ -286,11 +303,10 @@ public class SetCatalogScreen extends Screen {
             }
         }
 
+        int innerW = 200; // rightW (214) - 14
         AdminApiClient.SetRow set = getSelectedSet();
         if (set == null) {
             this.currentSummary = new LoadoutAnalyzer.LoadoutSummary(0, 0.0f, 1.0, 0, 0, List.of());
-            this.cachedTraitLines.clear();
-            int innerW = 200; // rightW (214) - 14
             for (Component tc : this.currentSummary.toTraitComponents(true)) {
                 this.cachedTraitLines.addAll(this.font.split(tc, innerW - 4));
             }
@@ -324,9 +340,13 @@ public class SetCatalogScreen extends Screen {
         }
 
         this.currentSummary = LoadoutAnalyzer.analyze(analyzerInputs);
+        for (Component tc : this.currentSummary.toTraitComponents(true)) {
+            this.cachedTraitLines.addAll(this.font.split(tc, innerW - 4));
+        }
         updateActionButtons();
     }
 
+    /** Returns a compact piece label for trait source attribution. */
     private String getShortSlotName(EquipmentSlot slot) {
         return switch (slot) {
             case HEAD -> "Helmet";
@@ -337,6 +357,7 @@ public class SetCatalogScreen extends Screen {
         };
     }
 
+    /** Updates active states and dynamic missing-piece counts on the bottom action buttons. */
     private void updateActionButtons() {
         AdminApiClient.SetRow set = getSelectedSet();
         if (this.tryFittingRoomBtn != null) {
@@ -363,6 +384,7 @@ public class SetCatalogScreen extends Screen {
         }
     }
 
+    /** Opens {@link FittingRoomScreen} pre-loaded with all armor pieces of the selected set. */
     private void openInFittingRoom() {
         if (this.minecraft == null || this.orderedSetPieces.isEmpty()) return;
         FittingRoomScreen fittingRoom = new FittingRoomScreen(this);
@@ -370,6 +392,7 @@ public class SetCatalogScreen extends Screen {
         this.minecraft.setScreen(fittingRoom);
     }
 
+    /** Adds all unowned, non-wishlisted pieces of the selected set to the player's wishlist. */
     private void wishlistMissingPieces() {
         if (this.orderedSetPieces.isEmpty()) return;
         boolean addedAny = false;
@@ -450,6 +473,7 @@ public class SetCatalogScreen extends Screen {
         return super.keyPressed(event);
     }
 
+    /** Cycles the active set selection forward or backward through {@code filteredSets}. */
     private void stepSelection(int delta) {
         if (this.filteredSets.isEmpty()) return;
         int curIdx = 0;
@@ -474,6 +498,7 @@ public class SetCatalogScreen extends Screen {
 
     @Override
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
+        if (this.minecraft == null) return;
         this.clickTargets.clear();
 
         int panelW = 470;
@@ -785,6 +810,7 @@ public class SetCatalogScreen extends Screen {
         }
     }
 
+    /** Renders the 3D {@link PreviewDummyPlayer} inside the center showcase stage. */
     private void renderFreeOrbitDummy(GuiGraphicsExtractor graphics, int x0, int y0, int x1, int y1, int size) {
         if (this.dummy == null) return;
 

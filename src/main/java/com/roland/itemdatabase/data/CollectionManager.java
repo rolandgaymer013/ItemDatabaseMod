@@ -19,8 +19,10 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Manages player item collection and wishlist states, persistence to disk, and ID imports.
- * Persists owned item IDs and wishlisted item IDs to itemdatabase_collection.json.
+ * Manages player item collection and wishlist states, JSON disk persistence, and ID imports.
+ * <p>
+ * Maintains scoped storage keys ({@code crate_<id>} / {@code misc_<id>}) alongside normalized
+ * lowercase clean-name caches so duplicate "Repeat appearance" crate re-releases resolve in O(1) time.
  */
 public class CollectionManager {
     private static final Logger LOGGER = LoggerFactory.getLogger("ItemDatabase/Collection");
@@ -33,14 +35,57 @@ public class CollectionManager {
 
     private static final Set<String> OWNED_ITEM_IDS = new HashSet<>();
     private static final Set<String> WISHLIST_ITEM_IDS = new HashSet<>();
+    private static final Set<String> OWNED_CLEAN_NAMES = new HashSet<>();
+    private static final Set<String> WISHLIST_CLEAN_NAMES = new HashSet<>();
 
     static {
         load();
     }
 
     /**
-     * Loads saved collection & wishlist data from disk.
-     * Backwards-compatible with previous flat Set<String> format.
+     * Rebuilds the O(1) normalized clean-name lookup sets from currently loaded database items.
+     * Should be invoked after loading disk state or completing asynchronous database preloads.
+     */
+    public static synchronized void rebuildCleanNameCaches() {
+        OWNED_CLEAN_NAMES.clear();
+        WISHLIST_CLEAN_NAMES.clear();
+
+        if (DatabaseManager.CRATE_ITEMS.isEmpty() && DatabaseManager.MISC_ITEMS.isEmpty()) {
+            return;
+        }
+
+        for (ItemEntry item : DatabaseManager.CRATE_ITEMS.values()) {
+            String key = getStorageKey(item);
+            String rawId = item.id().trim();
+            String cleanName = item.getCleanName().trim().toLowerCase();
+            if (cleanName.isEmpty()) continue;
+
+            if (OWNED_ITEM_IDS.contains(key) || OWNED_ITEM_IDS.contains(rawId)) {
+                OWNED_CLEAN_NAMES.add(cleanName);
+            }
+            if (WISHLIST_ITEM_IDS.contains(key) || WISHLIST_ITEM_IDS.contains(rawId)) {
+                WISHLIST_CLEAN_NAMES.add(cleanName);
+            }
+        }
+
+        for (ItemEntry item : DatabaseManager.MISC_ITEMS.values()) {
+            String key = getStorageKey(item);
+            String rawId = item.id().trim();
+            String cleanName = item.getCleanName().trim().toLowerCase();
+            if (cleanName.isEmpty()) continue;
+
+            if (OWNED_ITEM_IDS.contains(key) || OWNED_ITEM_IDS.contains(rawId)) {
+                OWNED_CLEAN_NAMES.add(cleanName);
+            }
+            if (WISHLIST_ITEM_IDS.contains(key) || WISHLIST_ITEM_IDS.contains(rawId)) {
+                WISHLIST_CLEAN_NAMES.add(cleanName);
+            }
+        }
+    }
+
+    /**
+     * Loads saved collection and wishlist data from {@code itemdatabase_collection.json}.
+     * Backwards-compatible with legacy flat JSON arrays of owned IDs.
      */
     public static synchronized void load() {
         if (!CONFIG_FILE.exists()) {
@@ -53,7 +98,6 @@ public class CollectionManager {
             WISHLIST_ITEM_IDS.clear();
 
             if (root.isJsonArray()) {
-                // Legacy format: raw array of owned IDs
                 for (JsonElement el : root.getAsJsonArray()) {
                     if (el.isJsonPrimitive()) {
                         OWNED_ITEM_IDS.add(el.getAsString().trim());
@@ -74,13 +118,14 @@ public class CollectionManager {
                     }
                 }
             }
+            rebuildCleanNameCaches();
         } catch (Exception e) {
             LOGGER.error("Failed to load collection database from {}", CONFIG_FILE.getName(), e);
         }
     }
 
     /**
-     * Serializes both collection and wishlist states to disk.
+     * Serializes both owned and wishlisted item sets to disk.
      */
     public static synchronized void save() {
         try {
@@ -112,14 +157,16 @@ public class CollectionManager {
     }
 
     // ==========================================
-    // OWNED COLLECTION METHODS
+    // STRING ID COLLECTION METHODS
     // ==========================================
 
+    /** Checks whether a raw or scoped item ID is marked as owned. */
     public static synchronized boolean isOwned(String itemId) {
         if (itemId == null) return false;
         return OWNED_ITEM_IDS.contains(itemId.trim());
     }
 
+    /** Explicitly sets the owned status for a raw or scoped item ID and persists to disk. */
     public static synchronized void setOwned(String itemId, boolean owned) {
         if (itemId == null || itemId.isBlank()) return;
         String cleanId = itemId.trim();
@@ -128,9 +175,11 @@ public class CollectionManager {
         } else {
             OWNED_ITEM_IDS.remove(cleanId);
         }
+        rebuildCleanNameCaches();
         save();
     }
 
+    /** Toggles the owned status for a raw or scoped item ID and returns the new state. */
     public static synchronized boolean toggleOwned(String itemId) {
         if (itemId == null || itemId.isBlank()) return false;
         String cleanId = itemId.trim();
@@ -140,27 +189,32 @@ public class CollectionManager {
         } else {
             OWNED_ITEM_IDS.remove(cleanId);
         }
+        rebuildCleanNameCaches();
         save();
         return newState;
     }
 
+    /** Returns the number of stored owned ID entries. */
     public static synchronized int getOwnedCount() {
         return OWNED_ITEM_IDS.size();
     }
 
+    /** Returns an unmodifiable snapshot of all stored owned IDs. */
     public static synchronized Set<String> getOwnedIds() {
         return Collections.unmodifiableSet(new HashSet<>(OWNED_ITEM_IDS));
     }
 
     // ==========================================
-    // WISHLIST METHODS
+    // STRING ID WISHLIST METHODS
     // ==========================================
 
+    /** Checks whether a raw or scoped item ID is on the wishlist. */
     public static synchronized boolean isWishlisted(String itemId) {
         if (itemId == null) return false;
         return WISHLIST_ITEM_IDS.contains(itemId.trim());
     }
 
+    /** Explicitly sets the wishlist status for a raw or scoped item ID and persists to disk. */
     public static synchronized void setWishlisted(String itemId, boolean wishlisted) {
         if (itemId == null || itemId.isBlank()) return;
         String cleanId = itemId.trim();
@@ -169,9 +223,11 @@ public class CollectionManager {
         } else {
             WISHLIST_ITEM_IDS.remove(cleanId);
         }
+        rebuildCleanNameCaches();
         save();
     }
 
+    /** Toggles the wishlist status for a raw or scoped item ID and returns the new state. */
     public static synchronized boolean toggleWishlist(String itemId) {
         if (itemId == null || itemId.isBlank()) return false;
         String cleanId = itemId.trim();
@@ -181,41 +237,39 @@ public class CollectionManager {
         } else {
             WISHLIST_ITEM_IDS.remove(cleanId);
         }
+        rebuildCleanNameCaches();
         save();
         return newState;
     }
 
+    /** Returns the number of stored wishlist ID entries. */
     public static synchronized int getWishlistCount() {
         return WISHLIST_ITEM_IDS.size();
     }
 
+    /** Returns an unmodifiable snapshot of all stored wishlist IDs. */
     public static synchronized Set<String> getWishlistIds() {
         return Collections.unmodifiableSet(new HashSet<>(WISHLIST_ITEM_IDS));
     }
 
     /**
-     * Checks whether an item name (clean, stripped of formatting/icons) is on the wishlist.
+     * Checks in O(1) time whether a clean item name (stripped of formatting/icons) is on the wishlist.
      */
     public static synchronized boolean isNameOnWishlist(String cleanItemName) {
         if (cleanItemName == null || cleanItemName.isBlank()) return false;
-        String target = cleanItemName.trim().toLowerCase();
-
-        for (String id : WISHLIST_ITEM_IDS) {
-            ItemEntry item = DatabaseManager.CRATE_ITEMS.get(id);
-            if (item == null) {
-                item = DatabaseManager.MISC_ITEMS.get(id);
-            }
-            if (item != null && item.getCleanName().equalsIgnoreCase(target)) {
-                return true;
-            }
-        }
-        return false;
+        return WISHLIST_CLEAN_NAMES.contains(cleanItemName.trim().toLowerCase());
     }
 
     // ==========================================
     // IMPORT HELPER
     // ==========================================
 
+    /**
+     * Bulk-imports comma- or whitespace-separated item IDs into the owned collection.
+     *
+     * @param input Raw string containing item IDs.
+     * @return Count of newly added unique IDs.
+     */
     public static synchronized int importIds(String input) {
         if (input == null || input.isBlank()) return 0;
         int imported = 0;
@@ -232,51 +286,62 @@ public class CollectionManager {
         }
 
         if (imported > 0) {
+            rebuildCleanNameCaches();
             save();
         }
         return imported;
     }
 
+    // ==========================================
+    // ITEM ENTRY COLLECTION & WISHLIST METHODS (O(1) CACHED)
+    // ==========================================
+
+    /**
+     * Builds a collision-free storage key ({@code crate_<id>} or {@code misc_<id>}) for an {@link ItemEntry}.
+     */
     public static String getStorageKey(ItemEntry item) {
         if (item == null) return "";
         return (item.isCrateItem() ? "crate_" : "misc_") + item.id().trim();
     }
 
+    /**
+     * Checks in O(1) time whether an {@link ItemEntry} or any "Repeat appearance" duplicate is owned.
+     */
     public static synchronized boolean isOwned(ItemEntry item) {
         if (item == null) return false;
         if (OWNED_ITEM_IDS.contains(getStorageKey(item)) || OWNED_ITEM_IDS.contains(item.id().trim())) {
             return true;
         }
-
-        // Duplicate / "Repeat appearance" check by clean item name
-        String targetName = item.getCleanName().trim();
-        if (!targetName.isEmpty()) {
-            for (ItemEntry other : DatabaseManager.getAllItems()) {
-                if (other.getCleanName().trim().equalsIgnoreCase(targetName)) {
-                    if (OWNED_ITEM_IDS.contains(getStorageKey(other)) || OWNED_ITEM_IDS.contains(other.id().trim())) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
+        String targetName = item.getCleanName().trim().toLowerCase();
+        return !targetName.isEmpty() && OWNED_CLEAN_NAMES.contains(targetName);
     }
 
+    /**
+     * Toggles the owned status of an {@link ItemEntry}, clearing all "Repeat appearance"
+     * duplicates when unmarking, and persists changes to disk.
+     */
     public static synchronized boolean toggleOwned(ItemEntry item) {
         if (item == null) return false;
         boolean currentlyOwned = isOwned(item);
         boolean newState = !currentlyOwned;
-        String targetName = item.getCleanName().trim();
+        String targetName = item.getCleanName().trim().toLowerCase();
 
         if (newState) {
             OWNED_ITEM_IDS.remove(item.id().trim());
             OWNED_ITEM_IDS.add(getStorageKey(item));
+            if (!targetName.isEmpty()) OWNED_CLEAN_NAMES.add(targetName);
         } else {
-            // Remove this item and any "Repeat appearance" duplicates sharing the same clean name
             OWNED_ITEM_IDS.remove(getStorageKey(item));
             OWNED_ITEM_IDS.remove(item.id().trim());
             if (!targetName.isEmpty()) {
-                for (ItemEntry other : DatabaseManager.getAllItems()) {
+                OWNED_CLEAN_NAMES.remove(targetName);
+                for (ItemEntry other : DatabaseManager.CRATE_ITEMS.values()) {
+                    if (other.getCleanName().trim().equalsIgnoreCase(targetName)) {
+                        OWNED_ITEM_IDS.remove(getStorageKey(other));
+                        OWNED_ITEM_IDS.remove(other.id().trim());
+                    }
+                }
+                for (ItemEntry other : DatabaseManager.MISC_ITEMS.values()) {
                     if (other.getCleanName().trim().equalsIgnoreCase(targetName)) {
                         OWNED_ITEM_IDS.remove(getStorageKey(other));
                         OWNED_ITEM_IDS.remove(other.id().trim());
@@ -288,39 +353,44 @@ public class CollectionManager {
         return newState;
     }
 
+    /**
+     * Checks in O(1) time whether an {@link ItemEntry} or any "Repeat appearance" duplicate is wishlisted.
+     */
     public static synchronized boolean isWishlisted(ItemEntry item) {
         if (item == null) return false;
         if (WISHLIST_ITEM_IDS.contains(getStorageKey(item)) || WISHLIST_ITEM_IDS.contains(item.id().trim())) {
             return true;
         }
-
-        String targetName = item.getCleanName().trim();
-        if (!targetName.isEmpty()) {
-            for (ItemEntry other : DatabaseManager.getAllItems()) {
-                if (other.getCleanName().trim().equalsIgnoreCase(targetName)) {
-                    if (WISHLIST_ITEM_IDS.contains(getStorageKey(other)) || WISHLIST_ITEM_IDS.contains(other.id().trim())) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
+        String targetName = item.getCleanName().trim().toLowerCase();
+        return !targetName.isEmpty() && WISHLIST_CLEAN_NAMES.contains(targetName);
     }
 
+    /**
+     * Toggles the wishlist status of an {@link ItemEntry}, clearing all "Repeat appearance"
+     * duplicates when unmarking, and persists changes to disk.
+     */
     public static synchronized boolean toggleWishlist(ItemEntry item) {
         if (item == null) return false;
         boolean currentlyWishlisted = isWishlisted(item);
         boolean newState = !currentlyWishlisted;
-        String targetName = item.getCleanName().trim();
+        String targetName = item.getCleanName().trim().toLowerCase();
 
         if (newState) {
             WISHLIST_ITEM_IDS.remove(item.id().trim());
             WISHLIST_ITEM_IDS.add(getStorageKey(item));
+            if (!targetName.isEmpty()) WISHLIST_CLEAN_NAMES.add(targetName);
         } else {
             WISHLIST_ITEM_IDS.remove(getStorageKey(item));
             WISHLIST_ITEM_IDS.remove(item.id().trim());
             if (!targetName.isEmpty()) {
-                for (ItemEntry other : DatabaseManager.getAllItems()) {
+                WISHLIST_CLEAN_NAMES.remove(targetName);
+                for (ItemEntry other : DatabaseManager.CRATE_ITEMS.values()) {
+                    if (other.getCleanName().trim().equalsIgnoreCase(targetName)) {
+                        WISHLIST_ITEM_IDS.remove(getStorageKey(other));
+                        WISHLIST_ITEM_IDS.remove(other.id().trim());
+                    }
+                }
+                for (ItemEntry other : DatabaseManager.MISC_ITEMS.values()) {
                     if (other.getCleanName().trim().equalsIgnoreCase(targetName)) {
                         WISHLIST_ITEM_IDS.remove(getStorageKey(other));
                         WISHLIST_ITEM_IDS.remove(other.id().trim());

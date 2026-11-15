@@ -70,6 +70,9 @@ public class DatabaseManager {
     /** Lookup map from individual Item ID -> Parent SetRow. */
     public static final Map<Integer, AdminApiClient.SetRow> ITEM_ID_TO_SET = new ConcurrentHashMap<>();
 
+    /** Fast O(1) lookup map from normalized lowercase clean item name -> ItemEntry. */
+    public static final Map<String, ItemEntry> CLEAN_NAME_TO_ITEM = new ConcurrentHashMap<>();
+
     /**
      * Initializes the client database by preloading all crates, misc items,
      * and container groups concurrently across background worker threads.
@@ -90,6 +93,8 @@ public class DatabaseManager {
         ).thenApply(v -> {
             mapItemsToCrates();
             mapItemsToMiscGroups();
+            rebuildNameIndex();
+            CollectionManager.rebuildCleanNameCaches();
             return !CRATE_ITEMS.isEmpty() || !MISC_ITEMS.isEmpty();
         }).whenComplete((res, ex) -> IS_PRELOADING.set(false));
     }
@@ -777,5 +782,56 @@ public class DatabaseManager {
      */
     public static AdminApiClient.SetRow findSetByItemId(int itemId) {
         return ITEM_ID_TO_SET.get(itemId);
+    }
+
+    /**
+     * Rebuilds the O(1) clean-name index across all loaded Crate and Misc items.
+     */
+    public static synchronized void rebuildNameIndex() {
+        CLEAN_NAME_TO_ITEM.clear();
+        for (ItemEntry item : CRATE_ITEMS.values()) {
+            String key = item.getCleanName().trim().toLowerCase();
+            if (!key.isEmpty()) {
+                CLEAN_NAME_TO_ITEM.putIfAbsent(key, item);
+            }
+        }
+        for (ItemEntry item : MISC_ITEMS.values()) {
+            String key = item.getCleanName().trim().toLowerCase();
+            if (!key.isEmpty()) {
+                CLEAN_NAME_TO_ITEM.putIfAbsent(key, item);
+            }
+        }
+    }
+
+    /**
+     * O(1) lookup by normalized clean item name (handles "Repeat appearance" crate duplicates).
+     */
+    public static ItemEntry findItemByCleanName(String cleanName) {
+        if (cleanName == null || cleanName.isBlank()) return null;
+        return CLEAN_NAME_TO_ITEM.get(cleanName.trim().toLowerCase());
+    }
+
+    /**
+     * Resolves the parent Armor Set for an ItemEntry by direct ID or clean item name.
+     */
+    public static AdminApiClient.SetRow findSetForItem(ItemEntry item) {
+        if (item == null) return null;
+        try {
+            AdminApiClient.SetRow direct = ITEM_ID_TO_SET.get(Integer.parseInt(item.id().trim()));
+            if (direct != null) return direct;
+        } catch (NumberFormatException ignored) {}
+
+        String targetName = item.getCleanName().trim().toLowerCase();
+        if (!targetName.isEmpty()) {
+            for (AdminApiClient.SetRow set : ARMOR_SETS) {
+                for (int sid : set.itemIds()) {
+                    ItemEntry canonical = findItemById(sid);
+                    if (canonical != null && canonical.getCleanName().trim().equalsIgnoreCase(targetName)) {
+                        return set;
+                    }
+                }
+            }
+        }
+        return null;
     }
 }

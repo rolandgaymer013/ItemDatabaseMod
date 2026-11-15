@@ -1,8 +1,10 @@
 package com.roland.itemdatabase.gui;
 
-import com.roland.itemdatabase.data.ItemEntry;
-import com.roland.itemdatabase.data.RawDataParser;
 import com.roland.itemdatabase.config.ModConfig;
+import com.roland.itemdatabase.data.AdminApiClient;
+import com.roland.itemdatabase.data.ItemEntry;
+import com.roland.itemdatabase.data.LoadoutAnalyzer;
+import com.roland.itemdatabase.data.RawDataParser;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
@@ -10,29 +12,33 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.minecraft.client.renderer.entity.state.LivingEntityRenderState;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
-import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.Pose;
-import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
-import net.minecraft.world.item.component.ItemAttributeModifiers;
-import net.minecraft.world.item.component.ItemLore;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.Set;
 
+/**
+ * Interactive 3D Fitting Room and Loadout Preview screen for BlossomCraft gear.
+ * <p>
+ * Provides a free-orbiting 3D player mannequin, four armor slots, mainhand/offhand slots,
+ * four passive inventory charm slots, live stat aggregation via {@link LoadoutAnalyzer},
+ * automatic full-set bonus detection, player inventory sync, and saved loadout presets.
+ */
 public class FittingRoomScreen extends Screen {
 
     private int getPanelX(int panelW) {
@@ -50,7 +56,7 @@ public class FittingRoomScreen extends Screen {
 
     // Passive Charms / Inventory Buffs (4 slots)
     private final List<ItemStack> passiveLoadout = new ArrayList<>(List.of(ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY));
-    private final List<ItemEntry> passiveEntries = new ArrayList<>(java.util.Arrays.asList(new ItemEntry[4]));
+    private final List<ItemEntry> passiveEntries = new ArrayList<>(Arrays.asList(new ItemEntry[4]));
     private final List<PreviewSlotWidget> passiveSlotWidgets = new ArrayList<>();
 
     private final Screen parent;
@@ -69,12 +75,10 @@ public class FittingRoomScreen extends Screen {
     // Interactive Equipment Slots
     private final List<PreviewSlotWidget> slotWidgets = new ArrayList<>();
 
-    // Dynamic Loadout Stats & Traits
-    private int totalArmor = 0;
-    private float totalToughness = 0.0f;
-    private double totalAttackDamage = 1.0;
-    private int totalAttackSpeedBonus = 0;
-    private int totalBonusHealth = 0;
+    // Dynamic Loadout Stats & Traits (powered by LoadoutAnalyzer)
+    private LoadoutAnalyzer.LoadoutSummary summary =
+            new LoadoutAnalyzer.LoadoutSummary(0, 0.0f, 1.0, 0, 0, List.of());
+    private AdminApiClient.SetRow activeCompletedSet = null;
     private final List<Component> equippedTraits = new ArrayList<>();
     private int traitsScrollOffset = 0;
     private final int maxVisibleTraits = 5;
@@ -84,17 +88,11 @@ public class FittingRoomScreen extends Screen {
     private float pitchVelocity = 0.0f;
     private boolean autoRotate = true;
 
-    private static final int PANEL_W = 390;
-    private static final int PANEL_H = 190;
-    private static final int STATS_OFFSET_X = 208;
-    private static final int TRAITS_OFFSET_Y = 110;
-
-    private static final Pattern EFFECT_PATTERN = Pattern.compile(
-            "(?i)\\b(Hero of the Village|Dolphins Grace|Fire Resistance|Water Breathing|Jump Boost|Night Vision|Conduit Power|Speed|Strength|Resistance|Haste|Regeneration|Absorption|Invisibility|Health Boost|Saturation)(?:\\s+([IVXLCDM]+))?"
-    );
-    private static final Pattern INT_STAT_PATTERN = Pattern.compile("\\+(\\d+)");
-    private static final Pattern DOUBLE_STAT_PATTERN = Pattern.compile("\\+?(\\d+(\\.\\d+)?)");
-
+    /**
+     * Constructs the Fitting Room screen with empty equipment slots.
+     *
+     * @param parent Parent screen to return to upon closing.
+     */
     public FittingRoomScreen(Screen parent) {
         super(Component.literal("Fitting Room & Loadout Preview"));
         this.parent = parent;
@@ -104,6 +102,9 @@ public class FittingRoomScreen extends Screen {
         }
     }
 
+    /**
+     * Equips a single database {@link ItemEntry} into its detected target {@link EquipmentSlot}.
+     */
     public void equipItemFromCatalog(ItemEntry entry) {
         if (entry == null) return;
         EquipmentSlot slot = entry.getTargetEquipmentSlot();
@@ -116,6 +117,9 @@ public class FittingRoomScreen extends Screen {
         }
     }
 
+    /**
+     * Replaces all four armor slots with the pieces from a complete registered armor set.
+     */
     public void equipFullSet(List<ItemEntry> setEntries) {
         if (setEntries == null) return;
         for (EquipmentSlot slot : new EquipmentSlot[]{EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
@@ -168,7 +172,7 @@ public class FittingRoomScreen extends Screen {
         int passiveY = mannequinBoxY + 58;
         for (int i = 0; i < 4; i++) {
             final int index = i;
-            final boolean isTopLeftSlot = (index == 0); // Slot 0 is dedicated to Top-Left Inv
+            final boolean isTopLeftSlot = (index == 0);
             int px = rightColX + (i % 2) * 22;
             int py = passiveY + (i / 2) * 22;
 
@@ -217,6 +221,7 @@ public class FittingRoomScreen extends Screen {
         }).bounds(btnStartX + btnW1 + btnW2 + btnW3 + btnW4 + (btnSpacing * 4), btnY, btnW5, 20).build());
     }
 
+    /** Registers an interactive equipment slot widget and syncs its initial stack onto the 3D dummy. */
     private void addSlot(int x, int y, EquipmentSlot slot, ItemStack defaultItem, ItemEntry defaultEntry) {
         PreviewSlotWidget widget = new PreviewSlotWidget(x, y, slot, defaultItem, defaultEntry, this::openSlotPicker);
         this.slotWidgets.add(widget);
@@ -227,225 +232,37 @@ public class FittingRoomScreen extends Screen {
         }
     }
 
+    /** Re-evaluates aggregated combat stats, passive traits, and active full-set bonuses. */
     private void recalculateStats() {
-        this.totalArmor = 0;
-        this.totalToughness = 0.0f;
-        this.totalAttackDamage = 1.0;
-        this.totalAttackSpeedBonus = 0;
-        this.totalBonusHealth = 0;
-        this.consolidatedTraits.clear();
-        this.equippedTraits.clear();
+        List<LoadoutAnalyzer.SlotInput> inputs = new ArrayList<>();
 
-        // 1. Equipped Gear & Weapons
         for (PreviewSlotWidget widget : this.slotWidgets) {
             ItemStack stack = widget.getItemStack();
             if (stack != null && !stack.isEmpty()) {
-                processItemStats(stack, widget.getCurrentEntry(), widget.getSlot(), false);
+                inputs.add(new LoadoutAnalyzer.SlotInput(stack, widget.getCurrentEntry(), widget.getSlot(), false, ""));
             }
         }
-
-        // 2. Passive Hotbar & Inventory items
         for (PreviewSlotWidget widget : this.passiveSlotWidgets) {
             ItemStack stack = widget.getItemStack();
             if (stack != null && !stack.isEmpty()) {
-                processItemStats(stack, widget.getCurrentEntry(), null, true);
+                inputs.add(new LoadoutAnalyzer.SlotInput(stack, widget.getCurrentEntry(), null, true, ""));
             }
         }
 
-        // 3. Populate final traits taking highest tiers
-        for (TraitInfo trait : this.consolidatedTraits.values()) {
-            this.equippedTraits.add(Component.literal("§6• §f" + trait.format()));
+        this.summary = LoadoutAnalyzer.analyze(inputs);
+        this.activeCompletedSet = LoadoutAnalyzer.findCompletedSet(this.currentEntries, this.currentLoadout);
+
+        this.equippedTraits.clear();
+        if (this.activeCompletedSet != null && this.activeCompletedSet.description() != null && !this.activeCompletedSet.description().isBlank()) {
+            this.equippedTraits.add(Component.literal("§6★ [" + this.activeCompletedSet.name() + "] §f" + this.activeCompletedSet.description()));
         }
-
-        if (this.equippedTraits.isEmpty()) {
-            this.equippedTraits.add(Component.literal("§8• None"));
-        }
-    }
-
-    private void processItemStats(ItemStack stack, ItemEntry entry, EquipmentSlot slot, boolean isPassive) {
-        if (stack == null || stack.isEmpty()) return;
-
-        // 1. Gather raw lore lines
-        List<Component> rawLines = new ArrayList<>();
-        if (entry != null && entry.rawData() != null && !entry.rawData().isBlank()) {
-            rawLines.addAll(RawDataParser.parseLore(entry.rawData()));
-        } else {
-            ItemLore lore = stack.get(DataComponents.LORE);
-            if (lore != null) {
-                rawLines.addAll(lore.lines());
-            }
-        }
-
-        // 2. Stitch multi-line ability entries together and sanitize dividers
-        List<String> combinedSections = new ArrayList<>();
-        StringBuilder currentBlock = null;
-
-        for (Component comp : rawLines) {
-            String rawStr = RawDataParser.sanitizeLegacyAmpersands(comp.getString());
-            String clean = net.minecraft.util.StringUtil.stripColor(rawStr).trim();
-
-            // Ignore quotes, dividers, and empty lines
-            if (clean.isBlank() || clean.equals("\"\"") || clean.startsWith("===") || clean.startsWith("---")) {
-                if (currentBlock != null) {
-                    combinedSections.add(currentBlock.toString());
-                    currentBlock = null;
-                }
-                continue;
-            }
-
-            // Boundary metadata lines that terminate an active trait block
-            if (clean.startsWith("Rarity:") || clean.startsWith("Season") || clean.startsWith("Win Chance:")
-                    || clean.startsWith("Unmodifiable") || clean.startsWith("▶") || clean.startsWith("◀")) {
-                if (currentBlock != null) {
-                    combinedSections.add(currentBlock.toString());
-                    currentBlock = null;
-                }
-                continue;
-            }
-
-            // A line starting with '>' begins an active/passive ability
-            if (clean.startsWith(">")) {
-                if (currentBlock != null) {
-                    combinedSections.add(currentBlock.toString());
-                }
-                currentBlock = new StringBuilder(clean.substring(1).trim());
-            } else if (currentBlock != null) {
-                currentBlock.append(" ").append(clean);
-            } else {
-                combinedSections.add(clean);
-            }
-        }
-        if (currentBlock != null) {
-            combinedSections.add(currentBlock.toString());
-        }
-
-        boolean parsedFromLore = false;
-
-        // 3. Process combined sections for stats and structured traits
-        for (String rawSection : combinedSections) {
-            String clean = rawSection.replaceAll("[\"']+$", "").trim();
-            String lower = clean.toLowerCase();
-
-            // Exclude active abilities that buff others or require active clicking
-            if (lower.contains("everyone around")
-                    || lower.contains("all players around")
-                    || lower.contains("give everyone")
-                    || lower.contains("heal everyone")
-                    || lower.contains("around you")
-                    || lower.startsWith("right-click to")
-                    || lower.startsWith("sneak-right-click to")
-                    || lower.startsWith("left-click to")
-                    || lower.startsWith("sneak-left-click to")
-                    || lower.startsWith("shift-right-click to")
-                    || lower.startsWith("shift-left-click to")) {
-                continue;
-            }
-
-            // --- Numerical Stat Parsing (Armor, Toughness, Damage, Attack Speed, Health) ---
-            if (lower.contains("armor:") || lower.matches(".*\\+\\d+\\s+armor.*")) {
-                this.totalArmor += extractInt(clean);
-                parsedFromLore = true;
-            } else if (lower.contains("toughness:") || lower.matches(".*\\+\\d+\\s+toughness.*")) {
-                this.totalToughness += extractInt(clean);
-                parsedFromLore = true;
-            } else if (lower.contains("attack speed:") || lower.contains("attack-speed:")) {
-                this.totalAttackSpeedBonus += extractInt(clean);
-                parsedFromLore = true;
-            } else if (lower.contains("attack damage:") || (lower.contains("damage:") && !lower.contains("resistance")) || lower.matches(".*\\+\\d+(\\.\\d+)?\\s+damage.*")) {
-                if (slot == EquipmentSlot.MAINHAND || isPassive) {
-                    this.totalAttackDamage += extractDouble(clean);
-                    parsedFromLore = true;
-                }
-            } else if (lower.contains("health") || lower.contains("heart")) {
-                int healthVal = extractInt(clean);
-                if (healthVal > 0) {
-                    this.totalBonusHealth += healthVal;
-                    parsedFromLore = true;
-                }
-            }
-
-            // Determine activation location
-            String req = "";
-            if (lower.contains("top-left") || lower.contains("top left")) {
-                req = "Top-Left Inv";
-            } else if (lower.contains("hotbar")) {
-                req = "Hotbar";
-            } else if (lower.contains("when held") || lower.contains("while held")) {
-                req = "Held";
-            } else if (lower.contains("when worn") || lower.contains("while worn")) {
-                req = "Worn";
-            } else if (lower.contains("inventory")) {
-                req = "Inventory";
-            }
-
-            // Identify potion effects: optional roman numeral ([IVXLCDM]+)? so un-tiered effects like Night Vision match
-            Matcher effMatcher = EFFECT_PATTERN.matcher(clean);
-
-            boolean foundEffect = false;
-            while (effMatcher.find()) {
-                foundEffect = true;
-                String name = formatEffectName(effMatcher.group(1));
-                String roman = effMatcher.group(2) != null ? effMatcher.group(2).toUpperCase() : "";
-                int level = roman.isEmpty() ? 1 : ROMAN_TO_INT.getOrDefault(roman, 1);
-
-                addOrUpgradeTrait(name, level, req);
-            }
-
-            // Fallback for custom trigger actions (e.g. Spawn Egg drop, Dash, Deflection)
-            if (!foundEffect && (lower.contains("spawn egg") || lower.contains("dash") || lower.contains("projectile deflection") || lower.contains("second chance"))) {
-                String action = clean.replaceFirst("^[>•✦▶*\\-]+\\s*", "");
-                int whenIdx = action.toLowerCase().indexOf(" when ");
-                if (whenIdx != -1) action = action.substring(0, whenIdx).trim();
-                consolidatedTraits.putIfAbsent("custom:" + action.toLowerCase(), new TraitInfo(action, 1, "", req, action));
-            }
-        }
-
-        // 4. Vanilla Attribute Modifiers fallback
-        if (!parsedFromLore && slot != null) {
-            ItemAttributeModifiers modifiers = stack.get(DataComponents.ATTRIBUTE_MODIFIERS);
-            if (modifiers != null && !modifiers.modifiers().isEmpty()) {
-                for (ItemAttributeModifiers.Entry modEntry : modifiers.modifiers()) {
-                    if (modEntry.slot().test(slot)) {
-                        var attr = modEntry.attribute();
-                        double amount = modEntry.modifier().amount();
-
-                        if (attr.is(Attributes.ARMOR)) {
-                            this.totalArmor += (int) amount;
-                        } else if (attr.is(Attributes.ARMOR_TOUGHNESS)) {
-                            this.totalToughness += (float) amount;
-                        } else if (attr.is(Attributes.ATTACK_DAMAGE)) {
-                            this.totalAttackDamage += amount;
-                        } else if (attr.is(Attributes.MAX_HEALTH)) {
-                            this.totalBonusHealth += (int) amount;
-                        }
-                    }
-                }
-            }
-        }
-
-        // 5. Offhand Shields / Totems
-        if (slot == EquipmentSlot.OFFHAND) {
-            if (stack.is(Items.SHIELD)) {
-                consolidatedTraits.putIfAbsent("custom:shield_deflect", new TraitInfo("Projectile Deflection", 1, "", "Offhand", "Projectile Deflection"));
-            } else if (stack.is(Items.TOTEM_OF_UNDYING)) {
-                this.totalBonusHealth += 4;
-                consolidatedTraits.putIfAbsent("custom:totem_second_chance", new TraitInfo("Second Chance (Totem)", 1, "", "Offhand", "§eSecond Chance (Totem)"));
-            }
-        }
-    }
-
-    private int extractInt(String text) {
-        Matcher m = INT_STAT_PATTERN.matcher(text);
-        return m.find() ? Integer.parseInt(m.group(1)) : 0;
-    }
-
-    private double extractDouble(String text) {
-        Matcher m = DOUBLE_STAT_PATTERN.matcher(text);
-        return m.find() ? Double.parseDouble(m.group(1)) : 0.0;
+        this.equippedTraits.addAll(this.summary.toTraitComponents(false));
     }
 
     @Override
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
+        if (this.minecraft == null) return;
+
         int panelW = 390;
         int panelH = 190;
         int panelX = getPanelX(panelW);
@@ -534,23 +351,24 @@ public class FittingRoomScreen extends Screen {
         int statsX = panelX + 208;
         int statsY = panelY + 36;
 
-        graphics.text(this.font, Component.literal("§6§lLoadout Stats"), statsX, statsY, 0xFFFFFFFF);
+        String headerTitle = this.activeCompletedSet != null
+                ? "§6§lLoadout Stats §e(★ " + this.activeCompletedSet.name() + ")"
+                : "§6§lLoadout Stats";
+        graphics.text(this.font, Component.literal(headerTitle), statsX, statsY, 0xFFFFFFFF);
         graphics.horizontalLine(statsX, panelX + panelW - 16, statsY + 10, 0xFF4A1A5E);
 
-        // Even 11px vertical spacing between each stat line
-        graphics.text(this.font, Component.literal("§bArmor: §f+" + this.totalArmor), statsX, statsY + 14, 0xFFFFFFFF);
-        graphics.text(this.font, Component.literal("§9Armor Toughness: §f+" + (int) this.totalToughness), statsX, statsY + 25, 0xFFFFFFFF);
-        graphics.text(this.font, Component.literal(String.format("§cAttack Damage: §f%.1f", this.totalAttackDamage)), statsX, statsY + 36, 0xFFFFFFFF);
-        graphics.text(this.font, Component.literal("§eAttack Speed: §f+" + this.totalAttackSpeedBonus + "%"), statsX, statsY + 47, 0xFFFFFFFF);
-        graphics.text(this.font, Component.literal("§aBonus Health: §f+" + this.totalBonusHealth + " ❤"), statsX, statsY + 58, 0xFFFFFFFF);
+        graphics.text(this.font, Component.literal("§bArmor: §f+" + this.summary.totalArmor()), statsX, statsY + 14, 0xFFFFFFFF);
+        graphics.text(this.font, Component.literal("§9Armor Toughness: §f+" + (int) this.summary.totalToughness()), statsX, statsY + 25, 0xFFFFFFFF);
+        graphics.text(this.font, Component.literal(String.format("§cAttack Damage: §f%.1f", this.summary.totalAttackDamage())), statsX, statsY + 36, 0xFFFFFFFF);
+        graphics.text(this.font, Component.literal("§eAttack Speed: §f+" + this.summary.totalAttackSpeedBonus() + "%"), statsX, statsY + 47, 0xFFFFFFFF);
+        graphics.text(this.font, Component.literal("§aBonus Health: §f+" + this.summary.totalBonusHealth() + " ❤"), statsX, statsY + 58, 0xFFFFFFFF);
 
         // Traits header positioned cleanly below the stats block
         int traitsY = statsY + 74;
         List<Component> distinctTraits = getDistinctTraits();
         int maxTextWidth = (panelX + panelW - 20) - statsX;
 
-        // Flatten multi-line wrapped formatted strings into printable lines
-        List<net.minecraft.util.FormattedCharSequence> displayLines = new ArrayList<>();
+        List<FormattedCharSequence> displayLines = new ArrayList<>();
         for (Component trait : distinctTraits) {
             displayLines.addAll(this.font.split(trait, maxTextWidth));
         }
@@ -581,7 +399,6 @@ public class FittingRoomScreen extends Screen {
             graphics.fill(barX, thumbY, barX + barWidth, thumbY + thumbHeight, 0xFFFFAA00);
         }
 
-        // Render tooltips on top of all components
         for (PreviewSlotWidget widget : this.slotWidgets) {
             widget.renderTooltip(graphics, mouseX, mouseY);
         }
@@ -590,6 +407,7 @@ public class FittingRoomScreen extends Screen {
         }
     }
 
+    /** Renders the 3D {@link PreviewDummyPlayer} inside the preview viewport with full yaw/pitch orbit. */
     private void renderFreeOrbitDummy(GuiGraphicsExtractor graphics, int x0, int y0, int x1, int y1, int size) {
         if (this.dummy == null) return;
 
@@ -621,6 +439,7 @@ public class FittingRoomScreen extends Screen {
         graphics.entity(renderState, size, translation, rotation, xRotation, x0, y0, x1, y1);
     }
 
+    /** Copies the local player's currently equipped armor and hand items onto the mannequin. */
     private void syncFromPlayerInventory() {
         Minecraft client = Minecraft.getInstance();
         if (client.player == null) return;
@@ -638,11 +457,12 @@ public class FittingRoomScreen extends Screen {
         recalculateStats();
     }
 
+    /** Plays a slot-appropriate armor or weapon equip sound effect. */
     private void playEquipSound(EquipmentSlot slot, ItemStack stack) {
         Minecraft client = Minecraft.getInstance();
         if (client.level == null) return;
 
-        net.minecraft.core.Holder<SoundEvent> soundHolder = null;
+        net.minecraft.core.Holder<SoundEvent> soundHolder;
 
         if (stack.isEmpty()) {
             soundHolder = SoundEvents.ARMOR_EQUIP_GENERIC;
@@ -659,6 +479,7 @@ public class FittingRoomScreen extends Screen {
         }
     }
 
+    /** Opens the catalog item picker for a primary armor or hand slot. */
     private void openSlotPicker(PreviewSlotWidget widget) {
         if (this.minecraft == null) return;
 
@@ -682,6 +503,7 @@ public class FittingRoomScreen extends Screen {
         }));
     }
 
+    /** Opens the catalog item picker for one of the four passive inventory charm slots. */
     private void openPassivePicker(int index, boolean isTopLeftSlot, PreviewSlotWidget widget) {
         if (this.minecraft == null) return;
 
@@ -702,6 +524,7 @@ public class FittingRoomScreen extends Screen {
         }
     }
 
+    /** Opens the saved Loadout Presets modal and applies the selected preset on return. */
     private void openPresetScreen() {
         if (this.minecraft == null) return;
 
@@ -751,9 +574,10 @@ public class FittingRoomScreen extends Screen {
         return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
     }
 
+    /** Deduplicates rendered trait lines by their plain text string. */
     private List<Component> getDistinctTraits() {
         List<Component> distinct = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.HashSet<>();
+        Set<String> seen = new HashSet<>();
         for (Component trait : this.equippedTraits) {
             if (seen.add(trait.getString())) {
                 distinct.add(trait);
@@ -761,48 +585,4 @@ public class FittingRoomScreen extends Screen {
         }
         return distinct;
     }
-
-    public record TraitInfo(String effectName, int level, String rawLevel, String requirement, String customAction) {
-        public String format() {
-            if (customAction != null) {
-                return customAction + (requirement.isEmpty() ? "" : " §8[" + requirement + "]");
-            }
-            String lvlStr = rawLevel.isEmpty() ? "" : " " + rawLevel;
-            return effectName + lvlStr + (requirement.isEmpty() ? "" : " §8[" + requirement + "]");
-        }
-    }
-
-    private static final Map<String, Integer> ROMAN_TO_INT = Map.of(
-            "I", 1, "II", 2, "III", 3, "IV", 4, "V", 5
-    );
-    private static final Map<Integer, String> INT_TO_ROMAN = Map.of(
-            1, "I", 2, "II", 3, "III", 4, "IV", 5, "V"
-    );
-
-    private final Map<String, TraitInfo> consolidatedTraits = new java.util.LinkedHashMap<>();
-
-    private void addOrUpgradeTrait(String effect, int level, String requirement) {
-        TraitInfo existing = consolidatedTraits.get(effect);
-        if (existing == null || level > existing.level()) {
-            boolean isUntiered = effect.equalsIgnoreCase("Night Vision")
-                    || effect.equalsIgnoreCase("Fire Resistance")
-                    || effect.equalsIgnoreCase("Water Breathing")
-                    || effect.equalsIgnoreCase("Invisibility");
-
-            String numeral = isUntiered && level == 1 ? "" : INT_TO_ROMAN.getOrDefault(level, "I");
-            consolidatedTraits.put(effect, new TraitInfo(effect, level, numeral, requirement, null));
-        }
-    }
-
-    private String formatEffectName(String raw) {
-        String[] words = raw.split(" ");
-        StringBuilder sb = new StringBuilder();
-        for (String w : words) {
-            if (!sb.isEmpty()) sb.append(" ");
-            sb.append(Character.toUpperCase(w.charAt(0))).append(w.substring(1).toLowerCase());
-        }
-        return sb.toString();
-    }
-
-
 }
