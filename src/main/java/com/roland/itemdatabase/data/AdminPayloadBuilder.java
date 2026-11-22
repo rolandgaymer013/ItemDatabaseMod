@@ -1,121 +1,67 @@
 package com.roland.itemdatabase.data;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.mojang.serialization.JsonOps;
+import net.minecraft.core.Holder;
+import net.minecraft.core.component.DataComponentPatch;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.ComponentSerialization;
 import net.minecraft.network.chat.Style;
 import net.minecraft.network.chat.TextColor;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.component.ItemLore;
+import net.minecraft.world.item.component.ResolvableProfile;
+import net.minecraft.world.item.component.TooltipDisplay;
+import net.minecraft.world.item.enchantment.Enchantment;
+import net.minecraft.world.item.enchantment.ItemEnchantments;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Builds API request payloads for item registration and modifications.
- * <p>
- * Handles:
- * <ul>
- *   <li>Extracting in-game {@link ItemStack} attributes and serializing {@link DataComponents} into RawData JSON.</li>
- *   <li>Auto-detecting item categories, rarity tiers, and primary tags from item metadata and lore.</li>
- *   <li>Generating styled HTML markup with inline CSS colors and decorations for web cards.</li>
- *   <li>Assembling the complete JSON schema expected by POST and PATCH /api/v1/admin/item.</li>
- * </ul>
  */
 public class AdminPayloadBuilder {
 
-    /**
-     * In-memory mutable model holding item attributes prior to API transmission.
-     */
     public static class DraftItem {
-        /** Unique database ID of the parent crate (used when isCrateItem is true). */
         public int crateId;
-
-        /** Database primary key; -1 indicates an uncommitted new item. */
         public int itemId = -1;
-
-        /** Display name of the item. */
         public String itemName;
-
-        /** Formatted HTML name snippet matching Minecraft style codes. */
         public String itemNameHtml;
-
-        /** Human-readable rarity string (e.g., Common, Rare, Legendary). */
         public String rarityHuman;
-
-        /** HTML span snippet containing the rarity label. */
         public String rarityHtml;
-
-        /** Configured crate win chance percentage string (e.g. "4%"). */
         public String winPercentage;
-
-        /** Primary item classification tag (e.g., Boots, Sword, Pickaxe). */
         public String tagPrimary;
-
-        /** Secondary item classification tag. */
         public String tagSecondary;
-
-        /** Tertiary item classification tag. */
         public String tagTertiary;
-
-        /** Quaternary item classification tag. */
         public String tagQuaternary;
-
-        /** Quinary item classification tag. */
         public String tagQuinary;
-
-        /** Senary item classification tag. */
         public String tagSenary;
-
-        /** Septenary item classification tag. */
         public String tagSeptenary;
-
-        /** Administrative notes or commentary. */
         public String notes;
-
-        /** Serialized Minecraft NBT/JSON component representation. */
         public String rawData;
-
-        /** Plain-text multi-line lore description. */
         public String itemHuman;
-
-        /** Generated HTML representation used by the web interface. */
         public String itemHtml;
-
-        /** File extension of the item's sprite icon (e.g. "png" or "gif"). */
         public String imageType = "png";
-
-        /** Web URL pointing to the item's existing icon on the server. */
         public String iconUrl = "";
-
-        /** Staged local image file scheduled for multipart upload. */
         public java.io.File pendingImageFile = null;
-
-        /** Reference to the source item stack if drafted directly from player inventory. */
-        public net.minecraft.world.item.ItemStack sourceStack;
-
-        /** In-memory styled Component lines rendered in GUI previews. */
-        public java.util.List<Component> loreLines = new java.util.ArrayList<>();
-
-        /** Toggle indicating if this item targets a Crate or a Misc Group. */
+        public ItemStack sourceStack;
+        public List<Component> loreLines = new ArrayList<>();
         public boolean isCrateItem = true;
-
-        /** Unique ID of the parent misc group (used when isCrateItem is false). */
         public int groupId = 1;
     }
 
     /**
-     * Inspects a held in-game ItemStack and populates a new DraftItem instance.
-     * Extracts name, lore, player skulls, and primary categories.
-     *
-     * @param stack   The ItemStack currently held by the player.
-     * @param crateId The target crate ID assigned to this new item.
-     * @return Fully populated DraftItem, or null if the stack is empty.
+     * Inspects an in-game ItemStack and populates a new DraftItem instance.
+     * Extracts name, enchantments, lore, unbreakable status, and full component JSON.
      */
     public static DraftItem buildDraftFromHeldItem(ItemStack stack, int crateId) {
-        if (stack.isEmpty()) {
+        if (stack == null || stack.isEmpty()) {
             return null;
         }
 
@@ -130,67 +76,119 @@ public class AdminPayloadBuilder {
         draft.itemName = displayName.getString().trim();
         draft.itemNameHtml = componentToHtml(displayName);
 
-        // 2. Build RawData JSON payload compatible with RawDataParser and Mojang codecs
+        // 2. Build RawData JSON payload with full DataComponentPatch
         JsonObject root = new JsonObject();
         String itemIdentifier = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
         root.addProperty("id", itemIdentifier);
         root.addProperty("count", stack.getCount());
 
         JsonObject componentsObj = new JsonObject();
+        DataComponentPatch.CODEC
+                .encodeStart(JsonOps.INSTANCE, stack.getComponentsPatch())
+                .result()
+                .ifPresent(json -> {
+                    if (json.isJsonObject()) {
+                        for (var entry : json.getAsJsonObject().entrySet()) {
+                            componentsObj.add(entry.getKey(), entry.getValue());
+                        }
+                    }
+                });
 
-        // Custom name component
-        if (customName != null) {
-            net.minecraft.network.chat.ComponentSerialization.CODEC
+        if (!componentsObj.has("minecraft:custom_name") && customName != null) {
+            ComponentSerialization.CODEC
                     .encodeStart(JsonOps.INSTANCE, customName)
                     .result()
-                    .ifPresent(json -> componentsObj.add("minecraft:custom_name", (com.google.gson.JsonElement) json));
+                    .ifPresent(json -> componentsObj.add("minecraft:custom_name", json));
         }
 
-        // Tooltip lore component
-        ItemLore lore = stack.get(DataComponents.LORE);
         StringBuilder humanSb = new StringBuilder();
         StringBuilder htmlSb = new StringBuilder();
 
-        htmlSb.append("<div class=\"item-tooltip\">");
-        htmlSb.append("<div class=\"item-title\">").append(draft.itemNameHtml).append("</div>");
-        humanSb.append(draft.itemName).append("\n");
+        // Prepend ❀ <exact itemNameHtml> ❀ at top of tooltip HTML
+        htmlSb.append("<span style=\"color:#FFAA00;\">❀</span> ")
+                .append(draft.itemNameHtml)
+                .append(" <span style=\"color:#FFAA00;\">❀</span><br>");
 
+        TooltipDisplay tooltipDisplay = stack.getOrDefault(DataComponents.TOOLTIP_DISPLAY, TooltipDisplay.DEFAULT);
+
+        // 3. Extract Enchantments (vanilla gray #AAAAAA)
+        ItemEnchantments enchantments = stack.get(DataComponents.ENCHANTMENTS);
+        if (enchantments != null && !enchantments.isEmpty() && tooltipDisplay.shows(DataComponents.ENCHANTMENTS)) {
+            for (Holder<Enchantment> holder : enchantments.keySet()) {
+                int level = enchantments.getLevel(holder);
+                Component enchComp = Enchantment.getFullname(holder, level);
+                humanSb.append(enchComp.getString()).append("\n");
+                htmlSb.append("<span style=\"color:#AAAAAA;\">")
+                        .append(escapeHtml(enchComp.getString()))
+                        .append("</span><br>");
+            }
+        }
+
+        ItemEnchantments storedEnchantments = stack.get(DataComponents.STORED_ENCHANTMENTS);
+        if (storedEnchantments != null && !storedEnchantments.isEmpty() && tooltipDisplay.shows(DataComponents.STORED_ENCHANTMENTS)) {
+            for (Holder<Enchantment> holder : storedEnchantments.keySet()) {
+                int level = storedEnchantments.getLevel(holder);
+                Component enchComp = Enchantment.getFullname(holder, level);
+                humanSb.append(enchComp.getString()).append("\n");
+                htmlSb.append("<span style=\"color:#AAAAAA;\">")
+                        .append(escapeHtml(enchComp.getString()))
+                        .append("</span><br>");
+            }
+        }
+
+        // 4. Extract Tooltip Lore lines with exact component colors
+        ItemLore lore = stack.get(DataComponents.LORE);
         if (lore != null && !lore.lines().isEmpty()) {
             JsonArray loreArray = new JsonArray();
             List<Component> lines = lore.lines();
+            draft.loreLines.addAll(lines);
+
             for (Component line : lines) {
-                net.minecraft.network.chat.ComponentSerialization.CODEC
+                ComponentSerialization.CODEC
                         .encodeStart(JsonOps.INSTANCE, line)
                         .result()
-                        .ifPresent(json -> loreArray.add((com.google.gson.JsonElement) json));
+                        .ifPresent(loreArray::add);
 
                 String linePlain = line.getString();
                 humanSb.append(linePlain).append("\n");
-                htmlSb.append("<div class=\"item-lore-line\">").append(componentToHtml(line)).append("</div>");
 
-                // Auto-detect Rarity line if present in lore (e.g. "Rarity: Mythic")
-                detectRarityFromLore(linePlain, draft);
+                if (linePlain.isEmpty()) {
+                    htmlSb.append("<br>");
+                } else {
+                    htmlSb.append(componentToHtml(line)).append("<br>");
+                }
+
+                detectRarityFromLore(line, draft);
             }
-            componentsObj.add("minecraft:lore", loreArray);
+            if (!componentsObj.has("minecraft:lore")) {
+                componentsObj.add("minecraft:lore", loreArray);
+            }
         }
 
-        // Player profile / skull texture component
-        net.minecraft.world.item.component.ResolvableProfile profile = stack.get(DataComponents.PROFILE);
-        if (profile != null) {
-            net.minecraft.world.item.component.ResolvableProfile.CODEC
+        // 5. Extract Unbreakable status (vanilla blue #5555FF)
+        if (stack.has(DataComponents.UNBREAKABLE) && tooltipDisplay.shows(DataComponents.UNBREAKABLE)) {
+            humanSb.append("Unbreakable\n");
+            htmlSb.append("<span style=\"color:#5555FF;\">Unbreakable</span><br>");
+        }
+
+        // Player profile / skull texture fallback
+        ResolvableProfile profile = stack.get(DataComponents.PROFILE);
+        if (profile != null && !componentsObj.has("minecraft:profile")) {
+            ResolvableProfile.CODEC
                     .encodeStart(JsonOps.INSTANCE, profile)
                     .result()
-                    .ifPresent(json -> componentsObj.add("minecraft:profile", (com.google.gson.JsonElement) json));
+                    .ifPresent(json -> componentsObj.add("minecraft:profile", json));
         }
 
-        htmlSb.append("</div>");
+        // Trim trailing <br>
+        String finalHtml = htmlSb.toString().replaceAll("(<br>)+$", "");
         draft.itemHuman = humanSb.toString().trim();
-        draft.itemHtml = htmlSb.toString().trim();
+        draft.itemHtml = finalHtml;
 
         root.add("components", componentsObj);
         draft.rawData = root.toString();
 
-        // 3. Auto-detect item tag based on item identifier
+        // 6. Auto-detect item tag based on item identifier
         draft.tagPrimary = detectPrimaryTag(itemIdentifier);
 
         return draft;
@@ -198,10 +196,6 @@ public class AdminPayloadBuilder {
 
     /**
      * Converts a DraftItem into the exact JSON schema required by the Flask admin API endpoints.
-     * Maps fields to Crate Item or Miscellaneous Item database columns accordingly.
-     *
-     * @param draft The working draft item to serialize.
-     * @return JsonObject matching backend database column specifications.
      */
     public static JsonObject serializeToApiJson(DraftItem draft) {
         JsonObject json = new JsonObject();
@@ -228,82 +222,192 @@ public class AdminPayloadBuilder {
         json.addProperty("RawData", draft.rawData != null ? draft.rawData : "");
         json.addProperty("ItemHuman", draft.itemHuman != null ? draft.itemHuman : "");
 
-        String itemHtml = convertHumanToHtml(draft.itemName, draft.rarityHuman, draft.itemHuman);
+        // Use exact component-rendered HTML when available; fallback only if manually edited without itemHtml
+        String itemHtml = (draft.itemHtml != null && !draft.itemHtml.isBlank())
+                ? draft.itemHtml
+                : convertHumanToHtml(draft.itemName, draft.rarityHuman, draft.itemHuman);
         json.addProperty("ItemHTML", itemHtml);
 
         return json;
     }
 
     /**
-     * Traverses a Minecraft Component and converts its styles, colors, and decorations into HTML tags.
-     *
-     * @param component Text component to convert.
-     * @return HTML snippet preserving formatting codes and hex colors.
+     * Traverses a Minecraft Component and converts both Style colors/decorations
+     * and any embedded §/legacy hex codes into exact HTML spans.
      */
     public static String componentToHtml(Component component) {
         if (component == null) return "";
         StringBuilder sb = new StringBuilder();
 
         component.visit((style, text) -> {
-            if (text.isEmpty()) return java.util.Optional.empty();
-
-            StringBuilder openTags = new StringBuilder();
-            StringBuilder closeTags = new StringBuilder();
+            if (text.isEmpty()) return Optional.empty();
 
             TextColor color = style.getColor();
-            if (color != null) {
-                openTags.append("<span style=\"color:").append(color.formatValue()).append(";\">");
-                closeTags.insert(0, "</span>");
-            }
-            if (style.isBold()) {
-                openTags.append("<b>");
-                closeTags.insert(0, "</b>");
-            }
-            if (style.isItalic()) {
-                openTags.append("<i>");
-                closeTags.insert(0, "</i>");
-            }
-            if (style.isUnderlined()) {
-                openTags.append("<u>");
-                closeTags.insert(0, "</u>");
-            }
-            if (style.isStrikethrough()) {
-                openTags.append("<s>");
-                closeTags.insert(0, "</s>");
-            }
+            // Default Minecraft lore color when style.getColor() is null is #AA00AA (dark purple) or #FFFFFF if explicitly set
+            String baseColor = (color != null) ? color.formatValue() : null;
 
-            // Escape HTML entities to prevent malformed tags
-            String escaped = text.replace("&", "&amp;")
-                    .replace("<", "&lt;")
-                    .replace(">", "&gt;");
-
-            sb.append(openTags).append(escaped).append(closeTags);
-            return java.util.Optional.empty();
+            sb.append(renderStyledRun(text, baseColor, style.isBold(), style.isItalic(), style.isUnderlined(), style.isStrikethrough()));
+            return Optional.empty();
         }, Style.EMPTY);
 
         return sb.toString();
     }
 
-    /**
-     * Inspects plain lore lines to identify rarity declarations (e.g., "Rarity: Mythic").
-     */
-    private static void detectRarityFromLore(String loreLine, DraftItem draft) {
-        String lower = loreLine.toLowerCase();
-        if (lower.contains("rarity:")) {
+    private static String renderStyledRun(String text, String defaultColor, boolean bold, boolean italic, boolean underline, boolean strike) {
+        StringBuilder out = new StringBuilder();
+        String curColor = defaultColor;
+        boolean curBold = bold;
+        boolean curItalic = italic;
+        boolean curUnder = underline;
+        boolean curStrike = strike;
+
+        StringBuilder buf = new StringBuilder();
+
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if ((c == '§' || c == '&') && i + 1 < text.length()) {
+                char code = Character.toLowerCase(text.charAt(i + 1));
+
+                // Hex format: §x§R§R§G§G§B§B
+                if (code == 'x' && i + 13 < text.length()) {
+                    StringBuilder hex = new StringBuilder("#");
+                    boolean validHex = true;
+                    for (int h = 0; h < 6; h++) {
+                        char prefix = text.charAt(i + 2 + (h * 2));
+                        char digit = text.charAt(i + 3 + (h * 2));
+                        if ((prefix == '§' || prefix == '&') && Character.digit(digit, 16) != -1) {
+                            hex.append(digit);
+                        } else {
+                            validHex = false;
+                            break;
+                        }
+                    }
+                    if (validHex) {
+                        flushSpan(out, buf, curColor, curBold, curItalic, curUnder, curStrike);
+                        curColor = hex.toString().toUpperCase();
+                        curBold = false;
+                        curItalic = false;
+                        curUnder = false;
+                        curStrike = false;
+                        i += 13;
+                        continue;
+                    }
+                }
+
+                String mapped = legacyCodeToHex(code);
+                if (mapped != null) {
+                    flushSpan(out, buf, curColor, curBold, curItalic, curUnder, curStrike);
+                    curColor = mapped;
+                    curBold = false;
+                    curItalic = false;
+                    curUnder = false;
+                    curStrike = false;
+                    i++;
+                    continue;
+                } else if (code == 'l') {
+                    flushSpan(out, buf, curColor, curBold, curItalic, curUnder, curStrike);
+                    curBold = true;
+                    i++;
+                    continue;
+                } else if (code == 'o') {
+                    flushSpan(out, buf, curColor, curBold, curItalic, curUnder, curStrike);
+                    curItalic = true;
+                    i++;
+                    continue;
+                } else if (code == 'n') {
+                    flushSpan(out, buf, curColor, curBold, curItalic, curUnder, curStrike);
+                    curUnder = true;
+                    i++;
+                    continue;
+                } else if (code == 'm') {
+                    flushSpan(out, buf, curColor, curBold, curItalic, curUnder, curStrike);
+                    curStrike = true;
+                    i++;
+                    continue;
+                } else if (code == 'r') {
+                    flushSpan(out, buf, curColor, curBold, curItalic, curUnder, curStrike);
+                    curColor = defaultColor;
+                    curBold = bold;
+                    curItalic = italic;
+                    curUnder = underline;
+                    curStrike = strike;
+                    i++;
+                    continue;
+                }
+            }
+            buf.append(c);
+        }
+
+        flushSpan(out, buf, curColor, curBold, curItalic, curUnder, curStrike);
+        return out.toString();
+    }
+
+    private static void flushSpan(StringBuilder out, StringBuilder buf, String color, boolean bold, boolean italic, boolean underline, boolean strike) {
+        if (buf.isEmpty()) return;
+        StringBuilder open = new StringBuilder();
+        StringBuilder close = new StringBuilder();
+
+        if (color != null) {
+            open.append("<span style=\"color:").append(color).append(";\">");
+            close.insert(0, "</span>");
+        }
+        if (bold) { open.append("<b>"); close.insert(0, "</b>"); }
+        if (italic) { open.append("<i>"); close.insert(0, "</i>"); }
+        if (underline) { open.append("<u>"); close.insert(0, "</u>"); }
+        if (strike) { open.append("<s>"); close.insert(0, "</s>"); }
+
+        out.append(open).append(escapeHtml(buf.toString())).append(close);
+        buf.setLength(0);
+    }
+
+    private static String legacyCodeToHex(char code) {
+        return switch (code) {
+            case '0' -> "#000000";
+            case '1' -> "#0000AA";
+            case '2' -> "#00AA00";
+            case '3' -> "#00AAAA";
+            case '4' -> "#AA0000";
+            case '5' -> "#AA00AA";
+            case '6' -> "#FFAA00";
+            case '7' -> "#AAAAAA";
+            case '8' -> "#555555";
+            case '9' -> "#5555FF";
+            case 'a' -> "#55FF55";
+            case 'b' -> "#55FFFF";
+            case 'c' -> "#FF5555";
+            case 'd' -> "#FF55FF";
+            case 'e' -> "#FFFF55";
+            case 'f' -> "#FFFFFF";
+            default -> null;
+        };
+    }
+
+    private static String escapeHtml(String s) {
+        return s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
+    }
+
+    private static void detectRarityFromLore(Component lineComp, DraftItem draft) {
+        String loreLine = lineComp.getString();
+        if (loreLine.toLowerCase().contains("rarity:")) {
             String[] parts = loreLine.split(":", 2);
             if (parts.length > 1) {
                 String rarity = parts[1].replaceAll("[^a-zA-Z]", "").trim();
                 if (!rarity.isEmpty()) {
                     draft.rarityHuman = rarity;
-                    draft.rarityHtml = String.format("<span>%s</span>", rarity);
+                    String fullLineHtml = componentToHtml(lineComp);
+                    int colonIdx = fullLineHtml.indexOf(':');
+                    if (colonIdx != -1 && colonIdx + 1 < fullLineHtml.length()) {
+                        draft.rarityHtml = fullLineHtml.substring(colonIdx + 1).trim();
+                    } else {
+                        draft.rarityHtml = String.format("<span>%s</span>", rarity);
+                    }
                 }
             }
         }
     }
 
-    /**
-     * Infers an initial primary tag from the Minecraft item identifier.
-     */
     private static String detectPrimaryTag(String identifier) {
         String name = identifier.toLowerCase();
         if (name.contains("pickaxe")) return "Pickaxe";
@@ -318,21 +422,15 @@ public class AdminPayloadBuilder {
         return "Misc";
     }
 
-    /**
-     * Converts raw lore text and item metadata into structured HTML spans for website cards.
-     * Applies standard theme colors to blossom symbols, rarity tiers, and crate badges.
-     *
-     * @param itemName Clean item title.
-     * @param rarity   Item rarity string used for title text coloring.
-     * @param loreText Multi-line lore description.
-     * @return Fully formatted HTML string suitable for web rendering.
-     */
+    private static boolean isEnchantmentLine(String line) {
+        return line.matches("^(Protection|Fire Protection|Feather Falling|Blast Protection|Projectile Protection|Respiration|Aqua Affinity|Thorns|Depth Strider|Frost Walker|Curse of Binding|Soul Speed|Swift Sneak|Sharpness|Smite|Bane of Arthropods|Knockback|Fire Aspect|Looting|Sweeping Edge|Efficiency|Silk Touch|Unbreaking|Fortune|Power|Punch|Flame|Infinity|Luck of the Sea|Lure|Loyalty|Impaling|Riptide|Channeling|Multishot|Quick Charge|Piercing|Density|Breach|Wind Burst|Mending|Curse of Vanishing)(\\s+[IVXLCDM]+|\\s+\\d+)?$");
+    }
+
     private static String convertHumanToHtml(String itemName, String rarity, String loreText) {
         StringBuilder html = new StringBuilder();
 
         // 1. Prepend styled item title line: ❀ Name ❀
         if (itemName != null && !itemName.isBlank()) {
-            // Strip Minecraft formatting codes (§a, &b, etc.) and boundary blossom symbols safely
             String cleanName = itemName.replaceAll("(?i)[§&][0-9a-fk-or]", "")
                     .replaceAll("^[❀*•\\s]+|[❀*•\\s]+$", "")
                     .trim();
@@ -371,6 +469,14 @@ public class AdminPayloadBuilder {
             if (line.matches("^[\u2550\u2500=-]+$")) {
                 html.append("<span style=\"color:#555555;\">").append(line).append("</span>");
             }
+            // Unbreakable flag: blue
+            else if (lower.equals("unbreakable")) {
+                html.append("<span style=\"color:#5555FF;\">Unbreakable</span>");
+            }
+            // Enchantment lines: gray
+            else if (isEnchantmentLine(line)) {
+                html.append("<span style=\"color:#AAAAAA;\">").append(line).append("</span>");
+            }
             // Blossom Crate badge: gray arrows, pink Blossom, aqua Crate
             else if (lower.contains("crate") && (lower.contains("blossom") || lower.contains("▶") || lower.contains("►"))) {
                 html.append("<span style=\"color:#AAAAAA;\">▶ </span><span style=\"color:#FF55FF;\">Blossom</span> <span style=\"color:#55FFFF;\">Crate</span><span style=\"color:#AAAAAA;\"> ◀</span>");
@@ -390,7 +496,7 @@ public class AdminPayloadBuilder {
                 String val = line.substring(11).trim();
                 html.append("<span style=\"color:#FFAA00;\">Win Chance: </span><span style=\"color:#FFFF55;\">").append(val).append("</span>");
             }
-            // Regular lore lines (enchantments, unmodifiable flags, quotes): white
+            // Regular lore lines: white
             else {
                 html.append("<span style=\"color:#FFFFFF;\">").append(line).append("</span>");
             }

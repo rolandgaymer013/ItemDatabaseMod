@@ -1099,6 +1099,7 @@ public class AdminUploadScreen extends Screen {
     private void saveAndCloseLoreModal() {
         String content = this.loreEditBox.getValue();
         draft.itemHuman = content.replaceAll("(?i)[§&][0-9a-fk-or]", "").trim();
+        draft.itemHtml = null; // Force HTML regeneration from edited plain text
         draft.loreLines = parseAndStyleLore(draft.itemHuman, draft.itemName);
         this.isLoreModalOpen = false;
     }

@@ -108,6 +108,7 @@ public class CrateContainerScanner {
                         materialName,
                         stack.getCount(),
                         rawNbt,
+                        itemDraft,
                         iconFile
                 );
                 stagedMap.put(dedupKey, staged);
@@ -174,20 +175,32 @@ public class CrateContainerScanner {
 
             int successCount = 0;
             for (StagedCrateItem item : itemsToUpload) {
-                AdminPayloadBuilder.DraftItem draft = new AdminPayloadBuilder.DraftItem();
+                AdminPayloadBuilder.DraftItem draft = item.getDraftItem() != null
+                        ? item.getDraftItem()
+                        : AdminPayloadBuilder.buildDraftFromHeldItem(item.getStack(), finalTargetId);
+                if (draft == null) {
+                    draft = new AdminPayloadBuilder.DraftItem();
+                }
+
                 draft.isCrateItem = isCrate;
                 if (isCrate) {
                     draft.crateId = finalTargetId;
-                    draft.rarityHuman = "Common";
-                    draft.rarityHtml = "<span>Common</span>";
-                    draft.winPercentage = "0%";
-                    draft.tagPrimary = "Misc";
-                    draft.tagSecondary = "None";
-                    draft.tagTertiary = "None";
-                    draft.tagQuaternary = "None";
-                    draft.tagQuinary = "None";
-                    draft.tagSenary = "None";
-                    draft.tagSeptenary = "None";
+                    if (draft.rarityHuman == null || draft.rarityHuman.isBlank()) {
+                        draft.rarityHuman = "Common";
+                        draft.rarityHtml = "<span>Common</span>";
+                    }
+                    if (draft.winPercentage == null || draft.winPercentage.isBlank()) {
+                        draft.winPercentage = "0%";
+                    }
+                    if (draft.tagPrimary == null || draft.tagPrimary.isBlank()) {
+                        draft.tagPrimary = "Misc";
+                    }
+                    if (draft.tagSecondary == null) draft.tagSecondary = "None";
+                    if (draft.tagTertiary == null) draft.tagTertiary = "None";
+                    if (draft.tagQuaternary == null) draft.tagQuaternary = "None";
+                    if (draft.tagQuinary == null) draft.tagQuinary = "None";
+                    if (draft.tagSenary == null) draft.tagSenary = "None";
+                    if (draft.tagSeptenary == null) draft.tagSeptenary = "None";
                 } else {
                     draft.groupId = finalTargetId;
                     draft.rarityHuman = "";
@@ -195,8 +208,10 @@ public class CrateContainerScanner {
                 }
 
                 draft.itemName = item.getDisplayName();
-                draft.notes = "";
-                draft.rawData = item.getRawNbtJson();
+                if (draft.notes == null) draft.notes = "";
+                if (draft.rawData == null || draft.rawData.isBlank()) {
+                    draft.rawData = item.getRawNbtJson();
+                }
                 draft.pendingImageFile = item.getIconFile();
 
                 File f = item.getIconFile();

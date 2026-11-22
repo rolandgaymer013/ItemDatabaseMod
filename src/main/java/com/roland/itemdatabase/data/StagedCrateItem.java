@@ -9,15 +9,21 @@ public class StagedCrateItem {
     private final String materialName;
     private int count;
     private final String rawNbtJson;
+    private final AdminPayloadBuilder.DraftItem draftItem;
     private File iconFile;
     private boolean selected;
 
     public StagedCrateItem(ItemStack stack, String displayName, String materialName, int count, String rawNbtJson, File iconFile) {
+        this(stack, displayName, materialName, count, rawNbtJson, null, iconFile);
+    }
+
+    public StagedCrateItem(ItemStack stack, String displayName, String materialName, int count, String rawNbtJson, AdminPayloadBuilder.DraftItem draftItem, File iconFile) {
         this.stack = stack;
         this.displayName = displayName;
         this.materialName = materialName;
         this.count = count;
         this.rawNbtJson = rawNbtJson;
+        this.draftItem = draftItem;
         this.iconFile = iconFile;
         this.selected = true; // Selected by default
     }
@@ -28,6 +34,7 @@ public class StagedCrateItem {
     public int getCount() { return count; }
     public void addCount(int extra) { this.count += extra; }
     public String getRawNbtJson() { return rawNbtJson; }
+    public AdminPayloadBuilder.DraftItem getDraftItem() { return draftItem; }
     public File getIconFile() { return iconFile; }
     public void setIconFile(File file) { this.iconFile = file; }
     public boolean isSelected() { return selected; }
